@@ -1,0 +1,7 @@
+Burnrate includes code and design derived from T3 Code (https://github.com/pingdotgg/t3code),
+Copyright (c) 2026 T3 Tools Inc., used under the MIT License (see LICENSE).
+
+Derived parts: the UI component library in src/components/ui, the stylesheet src/index.css, the Usage and
+Limits components in src/components/usage, and the limit pooling logic in src/shared.
+
+Burnrate is an independent project and is not affiliated with or endorsed by T3 Tools Inc.
