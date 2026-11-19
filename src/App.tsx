@@ -2,6 +2,7 @@ import { MoonIcon, PlugIcon, SunIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useLimits, useProviders } from "~/api";
+import { AppModalClose, AppModalFrame } from "~/components/AppModalFrame";
 import { Button } from "~/components/ui/button";
 import { UsagePage } from "~/components/usage/UsagePage";
 import { usePrimarySettings, updateSettings } from "~/hooks/useSettings";
@@ -77,13 +78,10 @@ export function App() {
 
   if (view === "providers") {
     return (
-      <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-5 py-6">
-        <header className="flex items-center gap-3">
-          <h1 className="text-sm font-medium">Burnrate / Providers</h1>
+      <AppModalFrame label="Providers">
+        <header className="flex min-h-12 shrink-0 items-center gap-1 border-b ps-5 pe-2">
+          <h1 className="py-2 text-sm font-medium">Providers</h1>
           <div className="ms-auto flex items-center gap-1">
-            <Button onClick={() => setView("usage")} size="sm" variant="outline">
-              Back to usage
-            </Button>
             <Button
               onClick={() => updateSettings({ theme: theme === "dark" ? "light" : "dark" })}
               aria-label="Toggle theme"
@@ -92,15 +90,20 @@ export function App() {
             >
               {theme === "dark" ? <SunIcon className="size-4" /> : <MoonIcon className="size-4" />}
             </Button>
+            <AppModalClose onClose={() => setView("usage")} />
           </div>
         </header>
-        <ProvidersPage providers={providers} />
-      </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-5xl px-5 pt-6 pb-12 sm:px-6">
+            <ProvidersPage providers={providers} />
+          </div>
+        </div>
+      </AppModalFrame>
     );
   }
 
   return (
-    <div className="flex h-screen min-h-0 flex-col">
+    <AppModalFrame label="Usage">
       <UsagePage
         limits={limits.data}
         limitsNow={limitsNow}
@@ -108,6 +111,6 @@ export function App() {
         onRefreshLimits={refreshLimits}
         trailing={trailing}
       />
-    </div>
+    </AppModalFrame>
   );
 }

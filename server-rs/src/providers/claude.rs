@@ -123,18 +123,116 @@ fn read_account(dir: &std::path::Path, account_file: &std::path::Path, id: &str)
         head["email"] = json!(email);
     }
     let result = agent()
-        .get("https://api.anthropic.com/api/oauth/usage?skip_spend=1")
+        .get("https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1")
         .set("Authorization", &format!("Bearer {token}"))
         .set("anthropic-beta", "oauth-2025-04-20")
         // The endpoint can answer 429 without a Claude Code user agent.
-        .set("User-Agent", "claude-code/2.1.273")
+        .set("User-Agent", &format!("claude-cli/{} (external, cli)", cli_version()))
         .call();
     Some(match result {
         Ok(res) => match res.into_json::<Value>() {
-            Ok(usage) => account_with(head, usage_to_windows(&usage)),
+            Ok(usage) => {
+                let mut account = account_with(head, usage_to_windows(&usage));
+                if let Some(credits) = reset_credits(usage.get("cedar_ember")) {
+                    account["limits"]["resetCredits"] = credits;
+                }
+                account
+            }
             Err(e) => unavailable_account(head, format!("Claude usage unavailable ({e}).")),
         },
         Err(ureq::Error::Status(code, _)) => unavailable_account(head, format!("Claude usage unavailable (HTTP {code}).")),
         Err(_) => unavailable_account(head, "Claude usage unavailable (error).".into()),
+    })
+}
+
+const RESET_KINDS: [(&str, &str, &str); 4] = [
+    ("session", "5-hour reset", "Refills your 5-hour limit."),
+    ("weekly", "Weekly reset", "Refills your weekly limit."),
+    ("fable", "Fable reset", "Refills your Fable allowance and gives back what Fable used on your weekly limit. It doesn't reset your whole week."),
+    ("full", "Full reset", "Refills your 5-hour and weekly limits."),
+];
+
+// Claude Code's own grouping: a grant that gives back weekly usage is a Fable reset, else its declared
+// type, else what it clears.
+fn grant_kind(grant: &Value) -> &'static str {
+    if grant.get("gives_back_weekly").and_then(Value::as_bool) == Some(true) {
+        return "fable";
+    }
+    if let Some(t) = grant.get("type").and_then(Value::as_str) {
+        if let Some((k, _, _)) = RESET_KINDS.iter().find(|(k, _, _)| *k == t && *k != "fable") {
+            return k;
+        }
+    }
+    let clears: Vec<&str> = grant.get("clears").and_then(Value::as_array).map(|c| c.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let session = clears.contains(&"five_hour");
+    let other = clears.iter().any(|c| *c != "five_hour");
+    if session && !other {
+        "session"
+    } else if other && !session {
+        "weekly"
+    } else {
+        "full"
+    }
+}
+
+/// Banked reset credits from Claude's `cedar_ember` block, shaped as the UI reads them.
+fn reset_credits(block: Option<&Value>) -> Option<Value> {
+    let block = block?;
+    if block.get("eligible").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let now = crate::types::parse_rfc3339_ms(&iso_now()).unwrap_or(0.0);
+    let live: Vec<&Value> = block
+        .get("grants")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|g| g.get("resets_left").and_then(Value::as_u64).is_some() && g.get("id").and_then(Value::as_str).is_some())
+        .filter(|g| g.get("paused").and_then(Value::as_bool) != Some(true) && g.get("usable_now").and_then(Value::as_bool) == Some(true))
+        .filter(|g| match g.get("ends_at").and_then(Value::as_str) {
+            None => true,
+            Some(t) => crate::types::parse_rfc3339_ms(t).is_some_and(|ms| ms > now),
+        })
+        .collect();
+    let next_id = block.get("next_grant_id").and_then(Value::as_str);
+    let next = live.iter().find(|g| g.get("id").and_then(Value::as_str) == next_id).copied();
+    let expires = |g: Option<&Value>| g.and_then(|g| g.get("ends_at")).and_then(Value::as_str).and_then(crate::types::parse_rfc3339_ms).and_then(iso_ms);
+    let options: Vec<Value> = RESET_KINDS
+        .iter()
+        .filter_map(|(kind, label, description)| {
+            let grants: Vec<&&Value> = live.iter().filter(|g| g.get("resets_left").and_then(Value::as_u64) != Some(0) && grant_kind(g) == *kind).collect();
+            let target = grants.first()?;
+            let count: u64 = grants.iter().filter_map(|g| g.get("resets_left").and_then(Value::as_u64)).sum();
+            let mut o = json!({"creditId": target.get("id"), "label": label, "description": description, "availableCount": count});
+            if let Some(e) = expires(Some(target)) {
+                o["expiresAt"] = json!(e);
+            }
+            Some(o)
+        })
+        .collect();
+    let total: u64 = if next.is_some() { live.iter().filter_map(|g| g.get("resets_left").and_then(Value::as_u64)).sum() } else { 0 };
+    let mut out = json!({"availableCount": total});
+    if let Some(e) = expires(next) {
+        out["nextExpiresAt"] = json!(e);
+    }
+    if let Some(n) = next {
+        out["nextCreditId"] = n.get("id").cloned().unwrap_or(Value::Null);
+        out["options"] = json!(options);
+    }
+    Some(out)
+}
+
+/// The installed Claude Code version: the reset-credit block is only returned to a current client.
+fn cli_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        let run = |program: &str| {
+            let mut cmd = std::process::Command::new(program);
+            cmd.arg("--version");
+            #[cfg(windows)]
+            std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
+            cmd.output().ok().and_then(|o| String::from_utf8(o.stdout).ok())
+        };
+        let text = run("claude").or_else(|| run("claude.cmd")).unwrap_or_default();
+        text.split_whitespace().find(|w| w.split('.').count() == 3 && w.chars().all(|c| c.is_ascii_digit() || c == '.')).unwrap_or("2.1.273").to_string()
     })
 }

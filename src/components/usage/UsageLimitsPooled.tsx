@@ -11,7 +11,7 @@ import {
 } from "~/shared/usageLimits";
 import { T, useGT, useMessages } from "~/i18n";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
-import { AlertTriangleIcon, TicketIcon } from "lucide-react";
+import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
 import {
   createContext,
   Fragment,
@@ -27,6 +27,7 @@ import type { LimitsAccount } from "~/contracts";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { formatUpcomingTimestamp } from "~/timestampFormat";
+import { OpenAI } from "../Icons";
 import { ProviderIcon } from "~/providers/ProviderIcon";
 import { providerColor, providerLabel } from "~/providers/registry";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
@@ -568,21 +569,44 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   );
 }
 
+const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";
+
+/** Providers that cannot show their limits here link to their own usage page. */
+function collectExternalLinks(accounts: readonly LimitsAccount[], host: string) {
+  const links = new Map<string, { label: string; url: string; message: string | undefined; accounts: string[] }>();
+  for (const account of accounts) {
+    const external = account.limits.externalUsage;
+    if (!external) continue;
+    const name = `${account.displayName ?? account.label} on ${host}`;
+    const held = links.get(external.url);
+    links.set(external.url, {
+      ...external,
+      message: account.limits.unavailable?.message,
+      accounts: [...new Set([...(held?.accounts ?? []), name])],
+    });
+  }
+  return [...links.values()];
+}
+
 export function UsageLimitsPooled({
   accounts,
   notices,
   now,
+  hostLabel = "this computer",
 }: {
   readonly accounts: readonly LimitsAccount[];
   readonly notices: readonly string[];
   readonly now: number;
+  readonly hostLabel?: string;
 }) {
+  const gt = useGT();
+  const externalLinks = collectExternalLinks(accounts, hostLabel);
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
   const pools = collectLimitPools(toLimitAccounts(accounts), now);
   return (
     <div className="flex flex-col gap-8">
-      {pools.length === 0 && notices.length === 0 ? (
+      {pools.length === 0 && notices.length === 0 && externalLinks.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           <T>No provider reports subscription limits yet. Connect one in Providers.</T>
         </p>
@@ -607,6 +631,28 @@ export function UsageLimitsPooled({
           ) : null
         }
       </Popover>
+      {externalLinks.map((link) => (
+        <section key={link.url} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            {link.url === CHATGPT_USAGE_URL ? <OpenAI className="size-5 shrink-0" aria-hidden="true" /> : null}
+            <div className="min-w-0 space-y-1">
+              <h2 className="text-sm font-medium">{link.label}</h2>
+              <p className="text-xs break-words text-muted-foreground">{link.accounts.join(", ")}</p>
+              {link.url === CHATGPT_USAGE_URL ? (
+                <p className="text-xs text-muted-foreground">
+                  <T>View usage in ChatGPT with your connected account.</T>
+                </p>
+              ) : link.message ? (
+                <p className="max-w-xl text-xs text-muted-foreground">{link.message}</p>
+              ) : null}
+            </div>
+          </div>
+          <Button variant="ghost-muted" size="xs" onClick={() => window.open(link.url, "_blank", "noopener")}>
+            {gt("Manage usage")}
+            <ExternalLinkIcon className="size-3.5" aria-hidden="true" />
+          </Button>
+        </section>
+      ))}
       <LimitNotices notices={notices} />
     </div>
   );

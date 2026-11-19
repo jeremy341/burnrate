@@ -53,6 +53,8 @@ export interface LimitsAccount {
 
 export interface LimitsReport {
   readonly createdAt: IsoDateTime;
+  /** Name of this computer, shown where T3 Code shows the environment. */
+  readonly hostLabel?: string;
   readonly accounts: readonly LimitsAccount[];
   readonly notices: readonly string[];
 }

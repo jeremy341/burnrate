@@ -380,6 +380,7 @@ export function UsagePage({
                 notices={limits?.notices ?? []}
                 hiddenProviders={hiddenProviders}
                 now={limitsNow}
+                hostLabel={limits?.hostLabel}
               />
             ) : shown === null ? (
               <UsageSkeleton />

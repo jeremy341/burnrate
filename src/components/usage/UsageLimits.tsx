@@ -238,12 +238,14 @@ export function UsageLimitsSection({
   notices,
   hiddenProviders,
   now,
+  hostLabel,
 }: {
   readonly accounts: readonly LimitsAccount[];
   readonly notices: readonly string[];
   readonly hiddenProviders: ReadonlySet<string>;
   readonly now: number;
+  readonly hostLabel?: string | undefined;
 }) {
   const visible = accounts.filter((account) => !hiddenProviders.has(account.driver));
-  return <UsageLimitsPooled accounts={visible} notices={notices} now={now} />;
+  return <UsageLimitsPooled accounts={visible} notices={notices} now={now} {...(hostLabel ? { hostLabel } : {})} />;
 }

@@ -66,7 +66,9 @@ impl Provider for Codex {
                     if let Some(plan) = body.get("plan_type").and_then(Value::as_str).and_then(plan_label) {
                         head["plan"] = json!(plan);
                     }
-                    vec![account_with(head, windows)]
+                    let mut account = account_with(head, windows);
+                    account["limits"]["externalUsage"] = json!({"label": "ChatGPT usage", "url": "https://chatgpt.com/#settings/Usage"});
+                    vec![account]
                 }
                 Err(e) => vec![unavailable_account(head, format!("Codex usage unavailable ({e})."))],
             },

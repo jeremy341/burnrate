@@ -116,7 +116,8 @@ fn limits_report(state: &State) -> Value {
             notices.push(format!("{name}: {message}"));
         }
     }
-    json!({"createdAt": providers::iso_now(), "accounts": accounts, "notices": notices})
+    let host = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "this computer".into());
+    json!({"createdAt": providers::iso_now(), "hostLabel": host, "accounts": accounts, "notices": notices})
 }
 
 fn read_body(request: &mut Request) -> Option<Value> {
