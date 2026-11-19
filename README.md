@@ -11,6 +11,8 @@ corepack pnpm build
 corepack pnpm start      # http://127.0.0.1:13790
 ```
 
+The server is kept lean (about 125 MB with a warm cache): parsed usage is stored as compact rows, not objects.
+
 Data (encrypted keys) lives in `data/` (override with `BURNRATE_DATA`). Port: `BURNRATE_PORT`.
 
 ## Status

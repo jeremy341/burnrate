@@ -1,5 +1,5 @@
 // Transcript readers. Formats and rules derived from T3 Code's usage readers (MIT, see NOTICE).
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { zstdDecompressSync } from "node:zlib";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -46,9 +46,40 @@ function walk(root: string, accept: (name: string) => boolean, out: Array<{ path
   return out;
 }
 
-function lines(path: string): string[] {
-  const buf = readFileSync(path);
-  return (path.endsWith(".zst") ? zstdDecompressSync(buf) : buf).toString("utf8").split("\n");
+/**
+ * Lines of a transcript. Plain files are read in 1 MB chunks so a multi-hundred-megabyte log never
+ * sits in memory whole; compressed archives are inflated one file at a time.
+ */
+function* lines(path: string): Generator<string> {
+  if (path.endsWith(".zst")) {
+    yield* zstdDecompressSync(readFileSync(path)).toString("utf8").split("\n");
+    return;
+  }
+  const fd = openSync(path, "r");
+  try {
+    const chunk = Buffer.allocUnsafe(1 << 20);
+    let carry: Buffer | null = null;
+    for (;;) {
+      const read = readSync(fd, chunk, 0, chunk.length, null);
+      if (read === 0) break;
+      let start = 0;
+      for (;;) {
+        const newline = chunk.indexOf(0x0a, start);
+        if (newline === -1 || newline >= read) break;
+        const piece = chunk.subarray(start, newline);
+        yield (carry ? Buffer.concat([carry, piece]) : piece).toString("utf8");
+        carry = null;
+        start = newline + 1;
+      }
+      if (start < read) {
+        const rest = Buffer.from(chunk.subarray(start, read));
+        carry = carry ? Buffer.concat([carry, rest]) : rest;
+      }
+    }
+    if (carry && carry.length > 0) yield carry.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Claude Code keeps one config directory per account (`~/.claude`, `~/.claude-work`, ...). */
@@ -441,7 +472,7 @@ function parseCodexRecord(rec: Record<string, unknown>, state: CodexState): Usag
  * recent `turn_context` and `thread_settings_applied`. Forked sessions copy their parent's history
  * right after the session meta; that copy is already billed in the parent. (Port of T3 Code's reader.)
  */
-export function parseCodexFile(content: string[]): ReadResult {
+export function parseCodexFile(content: Iterable<string>): ReadResult {
   const state: CodexState = {
     model: "",
     speed: "standard",
@@ -736,7 +767,7 @@ export const grokReader: SourceReader = {
 
 // ---------------------------------------------------------------- Pi
 
-export function parsePiFile(content: string[]): UsageRecord[] {
+export function parsePiFile(content: Iterable<string>): UsageRecord[] {
   const records: UsageRecord[] = [];
   let sessionId = "";
   for (const line of content) {

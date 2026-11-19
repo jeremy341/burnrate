@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "start": "node server/index.ts"
+    "start": "node --max-old-space-size=128 --max-semi-space-size=2 server/index.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
