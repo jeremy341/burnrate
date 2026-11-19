@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "start": "node --max-old-space-size=128 --max-semi-space-size=2 server/index.ts"
+    "start": "server-rs/target/release/burnrate-server.exe",
+    "build:server": "cargo build --release --manifest-path server-rs/Cargo.toml",
+    "start:node": "node --max-old-space-size=128 --max-semi-space-size=2 server/index.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

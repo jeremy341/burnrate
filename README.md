@@ -8,7 +8,8 @@ local app. Connect API keys or existing logins; everything stays on your compute
 ```powershell
 corepack pnpm install
 corepack pnpm build
-corepack pnpm start      # http://127.0.0.1:13790
+corepack pnpm build:server   # Rust server, needs cargo
+corepack pnpm start
 ```
 
 The server is kept lean (about 125 MB with a warm cache): parsed usage is stored as compact rows, not objects.
