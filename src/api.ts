@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import type { LimitsReport, ProviderInfo } from "~/contracts";
+import type { LimitsReport, ProviderInfo, ServerSettingsPatch, UsageModelPriceOverride } from "~/contracts";
 import { registerProviders } from "~/providers/registry";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -9,7 +9,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface SavedSettings {
+  usagePriceOverrides: Record<string, UsageModelPriceOverride>;
+  usageModelAliases: Record<string, string>;
+}
+
 export const api = {
+  settings: () => request<SavedSettings>("/api/settings"),
+  patchSettings: (patch: ServerSettingsPatch) =>
+    request<SavedSettings>("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch }),
+    }),
   limits: () => request<LimitsReport>("/api/limits"),
   providers: () => request<ProviderInfo[]>("/api/providers"),
   saveKey: (providerId: string, name: string, apiKey: string) =>

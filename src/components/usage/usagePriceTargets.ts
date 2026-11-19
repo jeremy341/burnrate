@@ -2,7 +2,7 @@ import type {
   EnvironmentId,
   ServerSettingsPatch,
   UsageModelPriceOverride,
-} from "@t3tools/contracts";
+} from "~/contracts";
 import { msg } from "~/i18n";
 
 import { m } from "~/i18n";

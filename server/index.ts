@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import type { LimitsAccount, LimitsReport, ProviderInfo } from "../src/contracts.ts";
 import { createKeyStore } from "./keys.ts";
+import { createSettingsStore } from "./settings.ts";
 import { PROVIDERS } from "./providers/index.ts";
 import { createUsageEngine } from "./usage/engine.ts";
 
@@ -13,7 +14,8 @@ const port = Number(process.env.BURNRATE_PORT ?? 13790);
 const dataDir = resolve(process.env.BURNRATE_DATA ?? join(root, "data"));
 const webDir = join(root, "dist", "web");
 const keys = createKeyStore(dataDir);
-const usage = createUsageEngine({ dataDir });
+const settings = createSettingsStore(dataDir);
+const usage = createUsageEngine({ dataDir, settings });
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const MIME: Record<string, string> = {
@@ -95,6 +97,14 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, path: string
     const timeZone = q.get("tz") || "UTC";
     const resolution = q.get("resolution") === "hour" ? "hour" : "day";
     return json(res, 200, await usage.summary({ sinceDay: since, untilDay: until, timeZone, resolution }));
+  }
+  if (path === "/api/settings") {
+    if (method === "GET") return json(res, 200, settings.get());
+    if (method === "PATCH") {
+      const body = (await readBody(req)) as { patch?: unknown };
+      const next = settings.patch((body.patch ?? {}) as never);
+      return next ? json(res, 200, next) : json(res, 400, { error: "invalid settings" });
+    }
   }
   const match = KEY_ROUTE.exec(path);
   if (match) {

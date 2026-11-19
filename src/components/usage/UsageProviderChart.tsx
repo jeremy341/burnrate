@@ -1,5 +1,5 @@
-import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
-import type { UsageProviderKind } from "@t3tools/contracts";
+import { ProviderIcon } from "~/providers/ProviderIcon";
+import type { UsageProviderKind } from "~/contracts";
 import { T, useGT, useLocale, useMessages } from "~/i18n";
 import { useLayoutEffect, useRef, useState } from "react";
 
@@ -253,11 +253,7 @@ function UsageChartTooltip({
         return (
           <div key={provider} className="flex items-center justify-between gap-3">
             <span className="flex items-center gap-1.5 text-muted-foreground">
-              <ProviderInstanceIcon
-                driverKind={driverKind}
-                displayName={providerLabel}
-                iconClassName="size-3"
-              />
+              <ProviderIcon driver={driverKind} label={providerLabel} iconClassName="size-3" />
               {providerLabel}
             </span>
             <span

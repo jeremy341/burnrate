@@ -1,16 +1,13 @@
-import { MoonIcon, SunIcon } from "lucide-react";
+import { MoonIcon, PlugIcon, SunIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useLimits, useProviders } from "~/api";
 import { Button } from "~/components/ui/button";
-import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
-import { UsageLimitsSection } from "~/components/usage/UsageLimits";
+import { UsagePage } from "~/components/usage/UsagePage";
 import { usePrimarySettings, updateSettings } from "~/hooks/useSettings";
 import { ProvidersPage } from "~/ProvidersPage";
 
-type Tab = "limits" | "providers";
-const NO_HIDDEN: ReadonlySet<string> = new Set();
+type View = "usage" | "providers";
 
 function useTheme() {
   const theme = usePrimarySettings((s) => s.theme);
@@ -30,70 +27,72 @@ function useTheme() {
 
 export function App() {
   const theme = useTheme();
-  const [tab, setTab] = useState<Tab>("limits");
+  const [view, setView] = useState<View>("usage");
   const limits = useLimits();
   const providers = useProviders();
-  const [now, setNow] = useState(() => Date.now());
+  const [limitsNow, setLimitsNow] = useState(() => Date.now());
 
-  const refresh = () => {
-    setNow(Date.now());
+  const refreshLimits = () => {
+    setLimitsNow(Date.now());
     limits.reload();
     providers.reload();
   };
 
+  const trailing = (
+    <>
+      <Button
+        onClick={() => setView(view === "providers" ? "usage" : "providers")}
+        aria-label="Providers"
+        aria-pressed={view === "providers"}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <PlugIcon className="size-4" />
+      </Button>
+      <Button
+        onClick={() => updateSettings({ theme: theme === "dark" ? "light" : "dark" })}
+        aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        size="icon-sm"
+        variant="ghost"
+      >
+        {theme === "dark" ? <SunIcon className="size-4" /> : <MoonIcon className="size-4" />}
+      </Button>
+    </>
+  );
+
+  if (view === "providers") {
+    return (
+      <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-5 py-6">
+        <header className="flex items-center gap-3">
+          <h1 className="text-sm font-medium">Burnrate / Providers</h1>
+          <div className="ms-auto flex items-center gap-1">
+            <Button onClick={() => setView("usage")} size="sm" variant="outline">
+              Back to usage
+            </Button>
+            <Button
+              onClick={() => updateSettings({ theme: theme === "dark" ? "light" : "dark" })}
+              aria-label="Toggle theme"
+              size="icon-sm"
+              variant="ghost"
+            >
+              {theme === "dark" ? <SunIcon className="size-4" /> : <MoonIcon className="size-4" />}
+            </Button>
+          </div>
+        </header>
+        <ProvidersPage providers={providers} />
+      </div>
+    );
+  }
+
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-4 py-6">
-      <header className="flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-semibold">Burnrate</h1>
-        <div className="ms-auto flex items-center gap-2">
-          <ToggleGroup
-            aria-label="View"
-            variant="segmented"
-            value={[tab]}
-            onValueChange={(next) => {
-              const value = next[0];
-              if (value === "limits" || value === "providers") setTab(value);
-            }}
-          >
-            <Toggle value="limits">Limits</Toggle>
-            <Toggle value="providers">Providers</Toggle>
-          </ToggleGroup>
-          <Button
-            onClick={refresh}
-            aria-label="Refresh"
-            aria-busy={limits.loading}
-            disabled={limits.loading}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <RefreshIcon size="sm" refreshing={limits.loading} />
-          </Button>
-          <Button
-            onClick={() => updateSettings({ theme: theme === "dark" ? "light" : "dark" })}
-            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            size="icon-sm"
-            variant="ghost"
-          >
-            {theme === "dark" ? <SunIcon className="size-4" /> : <MoonIcon className="size-4" />}
-          </Button>
-        </div>
-      </header>
-      <main>
-        {tab === "limits" ? (
-          limits.error ? (
-            <p className="text-sm text-muted-foreground">Could not reach the Burnrate server.</p>
-          ) : (
-            <UsageLimitsSection
-              accounts={limits.data?.accounts ?? []}
-              notices={limits.data?.notices ?? []}
-              hiddenProviders={NO_HIDDEN}
-              now={now}
-            />
-          )
-        ) : (
-          <ProvidersPage providers={providers} />
-        )}
-      </main>
+    <div className="flex h-screen min-h-0 flex-col">
+      <UsagePage
+        limits={limits.data}
+        limitsNow={limitsNow}
+        limitsLoading={limits.loading}
+        onRefreshLimits={refreshLimits}
+        trailing={trailing}
+      />
     </div>
   );
 }

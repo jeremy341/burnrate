@@ -1,4 +1,4 @@
-import type { UsageSource } from "@t3tools/contracts";
+import type { UsageSource } from "~/contracts";
 import { mFallback, msg } from "~/i18n";
 import type { MFunctionType } from "~/i18n";
 

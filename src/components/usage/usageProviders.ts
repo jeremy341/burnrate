@@ -1,70 +1,36 @@
-import type { UsageProviderKind } from "@t3tools/contracts";
-
-import { ProviderDriverKind } from "@t3tools/contracts";
+import type { UsageProviderKind } from "~/contracts";
+import { providerColor, providerLabel } from "~/providers/registry";
 
 import type { UsageMetric } from "./usageShortcuts";
 
-type UsageProviderPresentation = {
+interface UsageProviderPresentation {
   readonly label: string;
   readonly color: string;
-  readonly driverKind: ProviderDriverKind;
-};
-
-export const PROVIDER_PRESENTATION = {
-  codex: {
-    label: "Codex",
-    color: "var(--contrast-foreground)",
-    driverKind: ProviderDriverKind.make("codex"),
-  },
-  claude: {
-    label: "Claude Code",
-    color: "#d97757",
-    driverKind: ProviderDriverKind.make("claudeAgent"),
-  },
-  grok: {
-    label: "Grok Build",
-    color: "color-mix(in oklab, var(--contrast-foreground) 72%, var(--background))",
-    driverKind: ProviderDriverKind.make("grok"),
-  },
-  cursor: { label: "Cursor", color: "#8b8b8b", driverKind: ProviderDriverKind.make("cursor") },
-  opencode: {
-    label: "OpenCode",
-    color: "#5b9bbd",
-    driverKind: ProviderDriverKind.make("opencode"),
-  },
-  antigravity: {
-    label: "Antigravity",
-    color: "#8c7bd1",
-    driverKind: ProviderDriverKind.make("antigravity"),
-  },
-  pi: {
-    label: "Pi",
-    color: "#4d9f8a",
-    driverKind: ProviderDriverKind.make("pi"),
-  },
-  muse: {
-    label: "Muse Code",
-    color: "#0866ff",
-    driverKind: ProviderDriverKind.make("muse"),
-  },
-} satisfies Record<UsageProviderKind, UsageProviderPresentation>;
-
-/**
- * Usage-limit sources that are not agent drivers (so not in `PROVIDER_PRESENTATION`), keyed by driver kind.
- * Add a new limit-only provider here: label and bar color. Its icon goes in `PROVIDER_ICON_BY_PROVIDER`.
- */
-export const LIMIT_SOURCE_PRESENTATION: Readonly<
-  Record<string, { readonly label: string; readonly color: string }>
-> = {
-  mistral: { label: "Mistral", color: "#fa520f" },
-};
-
-/** Display name for any driver that can appear in the limits view. */
-export function usageDriverLabel(driver: string, clientLabel: string | undefined): string {
-  return clientLabel ?? LIMIT_SOURCE_PRESENTATION[driver]?.label ?? driver;
+  readonly driverKind: string;
 }
 
-export const PROVIDER_ORDER = Object.keys(PROVIDER_PRESENTATION) as UsageProviderKind[];
+/** Usage records name providers by short ids ("claude"); limits name their drivers ("claudeAgent"). */
+const DRIVER_BY_USAGE_PROVIDER: Readonly<Record<string, string>> = {
+  claude: "claudeAgent",
+};
+
+const presentationOf = (provider: string): UsageProviderPresentation => {
+  const driverKind = DRIVER_BY_USAGE_PROVIDER[provider] ?? provider;
+  return { label: providerLabel(driverKind), color: providerColor(driverKind), driverKind };
+};
+
+/** Any provider id resolves: the server decides what exists, so there is no fixed list here. */
+export const PROVIDER_PRESENTATION: Readonly<Record<string, UsageProviderPresentation>> = new Proxy(
+  {} as Record<string, UsageProviderPresentation>,
+  { get: (_target, key) => (typeof key === "string" ? presentationOf(key) : undefined) },
+);
+
+/** Display order: well-known providers first, then any other provider the server reports. */
+export const PROVIDER_ORDER: UsageProviderKind[] = ["claude", "codex", "opencode", "mistral"];
+
+export function registerUsageProviders(ids: readonly UsageProviderKind[]): void {
+  for (const id of ids) if (!PROVIDER_ORDER.includes(id)) PROVIDER_ORDER.push(id);
+}
 
 export function providersWithUsage(
   totals: readonly {

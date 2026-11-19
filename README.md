@@ -14,8 +14,11 @@ corepack pnpm start      # http://127.0.0.1:13790
 Data (encrypted keys) lives in `data/` (override with `BURNRATE_DATA`). Port: `BURNRATE_PORT`.
 
 ## Status
-- Limits view and Providers view work. Providers today: Codex (local ChatGPT login), Mistral (API keys).
-- Not yet ported: Claude, OpenCode, Cost and Tokens views, price overrides.
+- Views: Cost, Tokens, Limits and Providers. Dark and light mode.
+- Limits: Claude Code, OpenCode Go, Codex (local logins), Mistral (API keys).
+- Cost and tokens are read from local transcripts: Claude (all `~/.claude*` accounts), Codex (including
+  archived sessions), OpenCode. Prices come from LiteLLM and can be overridden per model.
+- Totals match T3 Code within a few percent on the same data (Codex service tiers are not resolved yet).
 - See [DESIGN.md](DESIGN.md) for the design system and how to add a provider.
 
 ## License

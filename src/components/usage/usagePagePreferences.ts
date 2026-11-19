@@ -1,31 +1,33 @@
-import { UsageProviderKind } from "@t3tools/contracts";
-import * as Schema from "effect/Schema";
+import type { UsageProviderKind } from "~/contracts";
 
-import { getLocalStorageItem, setLocalStorageItem } from "../../hooks/useLocalStorage";
+const STORAGE_KEY = "burnrate:usage-page-preferences:v1";
 
-const STORAGE_KEY = "t3code:usage-page-preferences:v1";
-const UsagePagePreferencesSchema = Schema.Struct({
-  metric: Schema.Literals(["cost", "tokens", "limits"]),
-  windowDays: Schema.Literals([1, 7, 30, 90]),
-  hiddenProviders: Schema.optional(Schema.Array(UsageProviderKind)),
-});
-export type UsagePagePreferences = typeof UsagePagePreferencesSchema.Type;
+export interface UsagePagePreferences {
+  metric: "cost" | "tokens" | "limits";
+  windowDays: 1 | 7 | 30 | 90;
+  hiddenProviders?: readonly UsageProviderKind[];
+}
 
 const DEFAULT_PREFERENCES: UsagePagePreferences = { metric: "limits", windowDays: 30 };
 
 export function readUsagePagePreferences(): UsagePagePreferences {
   try {
-    return getLocalStorageItem(STORAGE_KEY, UsagePagePreferencesSchema) ?? DEFAULT_PREFERENCES;
-  } catch (error) {
-    console.error("Could not read Usage page preferences.", error);
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<UsagePagePreferences> | null;
+    if (!raw) return DEFAULT_PREFERENCES;
+    return {
+      metric: raw.metric === "cost" || raw.metric === "tokens" || raw.metric === "limits" ? raw.metric : DEFAULT_PREFERENCES.metric,
+      windowDays: raw.windowDays === 1 || raw.windowDays === 7 || raw.windowDays === 30 || raw.windowDays === 90 ? raw.windowDays : DEFAULT_PREFERENCES.windowDays,
+      ...(Array.isArray(raw.hiddenProviders) ? { hiddenProviders: raw.hiddenProviders.filter((p): p is string => typeof p === "string") } : {}),
+    };
+  } catch {
     return DEFAULT_PREFERENCES;
   }
 }
 
 export function saveUsagePagePreferences(preferences: UsagePagePreferences): void {
   try {
-    setLocalStorageItem(STORAGE_KEY, preferences, UsagePagePreferencesSchema);
-  } catch (error) {
-    console.error("Could not save Usage page preferences.", error);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+  } catch {
+    /* storage unavailable */
   }
 }

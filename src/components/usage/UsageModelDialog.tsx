@@ -2,8 +2,8 @@ import { T, useGT, useLocale, Var } from "~/i18n";
 import { formatPercent, formatTokens, formatUsd } from "~/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "~/shared/usageMerge";
 
-import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "../../state/usage";
-import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "~/state/usage";
+import { ProviderIcon } from "~/providers/ProviderIcon";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -79,11 +79,7 @@ export function UsageModelDialog({
       <DialogPopup className="max-w-3xl">
         <DialogHeader>
           <div className="flex items-center gap-2">
-            <ProviderInstanceIcon
-              driverKind={presentation.driverKind}
-              displayName={presentation.label}
-              iconClassName="size-5"
-            />
+            <ProviderIcon driver={presentation.driverKind} label={presentation.label} iconClassName="size-5" />
             <DialogTitle>{model.model}</DialogTitle>
           </div>
           <DialogDescription>

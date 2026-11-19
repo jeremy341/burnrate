@@ -72,6 +72,7 @@ export interface ProviderInfo {
 
 export type UsageProviderKind = string;
 export type UsageDay = string;
+export const UsageDay = { make: (value: string): UsageDay => value };
 export type UsageCostSource = "providerReported" | "modelPriced" | "unpriced";
 
 /** Reasoning tokens are already included in output; input is uncached + cache reads + cache writes. */
@@ -99,6 +100,7 @@ export interface UsageModelPriceOverride {
 
 export interface UsageBucket {
   day: UsageDay;
+  sourcePath?: string;
   hourStart?: string;
   provider: UsageProviderKind;
   model: string;
@@ -116,14 +118,29 @@ export interface UsageBucket {
   sessions: number;
 }
 
-export interface UsageSource {
+export type EnvironmentId = string;
+
+/** Bump for incompatible UsageSummary changes. */
+export const USAGE_CONTRACT_VERSION = 6 as const;
+export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
+
+export interface UsageSourceFingerprint {
+  hostId: string;
   provider: UsageProviderKind;
-  path: string;
+  resolvedHomePath: string;
+  volumeId: string;
+  physicalSourceId?: string;
+}
+
+export interface UsageSource {
+  fingerprint: UsageSourceFingerprint;
   status: "ok" | "missing" | "partial" | "failed";
   scannedFiles: number;
+  skippedFiles: number;
   malformedRecords: number;
   distinctSessions: number;
   message: string | null;
+  refreshing?: true;
 }
 
 export interface UsagePricing {
@@ -133,14 +150,38 @@ export interface UsagePricing {
   knownModels: number;
 }
 
+export type UsageResolution = "day" | "hour";
+
 export interface UsageSummaryInput {
   sinceDay: UsageDay;
   untilDay: UsageDay;
   timeZone: string;
-  resolution?: "day" | "hour";
+  resolution?: UsageResolution;
+  sinceTime?: string;
+  untilTime?: string;
+  awaitRefresh?: boolean;
+  provisional?: boolean;
+}
+
+export interface UsageModelSelector {
+  provider?: string;
+  model: string;
+}
+
+export interface UsageModelFilter {
+  include?: readonly UsageModelSelector[];
+  exclude?: readonly UsageModelSelector[];
+}
+
+/** Changes to the price table and model names; `null` removes an entry. */
+export interface ServerSettingsPatch {
+  usagePriceOverrides?: Record<string, UsageModelPriceOverride | null>;
+  usageModelAliases?: Record<string, string | null>;
 }
 
 export interface UsageSummary {
+  contractVersion: number;
+  modelFilter?: UsageModelFilter;
   readAt: string;
   timeZone: string;
   sinceDay: UsageDay;

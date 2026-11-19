@@ -1,16 +1,11 @@
-import { useAtomValue } from "@effect/atom-react";
-import { AuthSettingsWriteScope, type EnvironmentId, sessionGrantsScope } from "@t3tools/contracts";
+import type { EnvironmentId, ServerSettingsPatch } from "~/contracts";
 import { ChevronDownIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
-import { AsyncResult, Atom } from "effect/reactivity";
 import { msg, T, useGT, useMessages, Var } from "~/i18n";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
-import { environmentPresentations } from "../../state/presentation";
-import { serverEnvironment } from "../../state/server";
-import { environmentSession, readEnvironmentScope } from "../../state/session";
-import { useAtomCommand } from "../../state/use-atom-command";
-import type { EnvironmentUsageStatus } from "../../state/usage";
+import { LOCAL_ENVIRONMENT_ID, type EnvironmentUsageStatus } from "~/state/usage";
+import { api } from "~/api";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -42,42 +37,36 @@ import {
   type UsagePriceWriteResult,
 } from "./usagePriceTargets";
 
-const priceTargetsAtom = Atom.make((get): readonly UsagePriceTarget[] =>
-  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, environment]) => {
-    const settings = get(serverEnvironment.settingsValueAtom(environmentId));
-    const session = get(environmentSession.sessionStateAtom(environmentId));
-    const sessionData = AsyncResult.getOrElse(session, () => null);
-    const access =
-      session._tag === "Failure"
-        ? "denied"
-        : sessionData === null
-          ? session.waiting
-            ? "pending"
-            : "denied"
-          : sessionGrantsScope(sessionData, AuthSettingsWriteScope)
-            ? "granted"
-            : "denied";
-    return {
-      environmentId,
-      label: environment.entry.target.label,
-      prices: settings?.usagePriceOverrides ?? null,
-      aliases:
-        environment.serverConfig?.environment.capabilities.usageModelAliases === true
-          ? (settings?.usageModelAliases ?? null)
-          : null,
-      unavailable:
-        environment.connection.phase !== "connected"
-          ? msg("Offline")
-          : settings === null
-            ? msg("Prices not loaded")
-            : access === "pending"
-              ? msg("Checking permissions…")
-              : access === "denied"
-                ? msg("Read-only access")
-                : null,
+/** Price table and model names saved on this computer. */
+function useLocalPriceTargets(): readonly UsagePriceTarget[] {
+  const [target, setTarget] = useState<UsagePriceTarget>({
+    environmentId: LOCAL_ENVIRONMENT_ID,
+    label: "This computer",
+    prices: null,
+    aliases: null,
+    unavailable: msg("Prices not loaded"),
+  });
+  useEffect(() => {
+    let cancelled = false;
+    void api.settings().then(
+      (settings) => {
+        if (cancelled) return;
+        setTarget({
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          label: "This computer",
+          prices: settings.usagePriceOverrides,
+          aliases: settings.usageModelAliases,
+          unavailable: null,
+        });
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
     };
-  }),
-);
+  }, []);
+  return [target];
+}
 
 type SaveAttempt = {
   readonly drafts: readonly UsagePriceDraft[];
@@ -93,24 +82,21 @@ type SaveAttempt = {
 
 export function UsagePriceOverrides({
   usage,
-  initialSelectedEnvironmentIds,
   initialModel,
   onOpenChange,
+  onChanged,
 }: {
   readonly usage: readonly EnvironmentUsageStatus[];
-  readonly initialSelectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly initialModel?: string | undefined;
   readonly onOpenChange: (open: boolean) => void;
+  readonly onChanged: () => void;
 }) {
   const gt = useGT();
   const messages = useMessages();
-  const environments = useAtomValue(priceTargetsAtom).map((target) =>
+  const environments = useLocalPriceTargets().map((target) =>
     target.unavailable === null ? target : { ...target, unavailable: messages(target.unavailable) },
   );
-  const [selectedIds, setSelectedIds] = useState(initialSelectedEnvironmentIds);
-  const selected = environments.filter(
-    (environment) => selectedIds === null || selectedIds.has(environment.environmentId),
-  );
+  const selected = environments;
   const [drafts, setDrafts] = useState<readonly UsagePriceDraft[]>(() =>
     initialModel === undefined ||
     selected.some(
@@ -125,7 +111,15 @@ export function UsagePriceOverrides({
   const [attempt, setAttempt] = useState<SaveAttempt | null>(null);
   const focusRowRef = useRef<string | null>(null);
   const nextRowId = useRef(0);
-  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
+  const updateSettings = async (input: { input: { patch: ServerSettingsPatch } }) => {
+    try {
+      await api.patchSettings(input.input.patch);
+      onChanged();
+      return { _tag: "Success" } as const;
+    } catch {
+      return { _tag: "Failure" } as const;
+    }
+  };
   const customModels = [
     ...new Set(
       selected.flatMap((environment) => [
@@ -186,19 +180,8 @@ export function UsagePriceOverrides({
     ) ?? [];
   const locked = pending || failedDestinations.length > 0;
   const hasChanges = stagedDrafts.length > 0;
-  const destinationLabel =
-    selected.length === 1
-      ? selected[0]!.label
-      : gt("{count, plural, one {{count} environments} other {{count} environments}}", {
-          count: selected.length,
-        });
-  const selectionLabel = selectedIds === null ? gt("All environments") : destinationLabel;
   const discard = () => {
     setDrafts([]);
-    setAttempt(null);
-  };
-  const selectEnvironments = (ids: ReadonlySet<EnvironmentId> | null) => {
-    setSelectedIds(ids);
     setAttempt(null);
   };
   const updateDraft = (draft: UsagePriceDraft) => {
@@ -273,10 +256,7 @@ export function UsagePriceOverrides({
           target.unavailable ?? [...changes.get(target.environmentId)!.errors.values()][0] ?? null,
       })),
       changes: new Map([...changes].map(([id, plan]) => [id, plan.changes])),
-      write: async (input) =>
-        readEnvironmentScope(input.environmentId, AuthSettingsWriteScope)
-          ? updateSettings(input)
-          : { _tag: "Failure" },
+      write: (input) => updateSettings(input),
       onResult: (environmentId, result) => {
         if (result.status === "failed") failed = true;
         setAttempt((previous) =>
@@ -304,61 +284,13 @@ export function UsagePriceOverrides({
           </DialogTitle>
           <DialogDescription>
             <T>
-              Prices and mappings apply to all past and future usage on the environments you select.
+              Prices and mappings apply to all past and future usage on this computer.
             </T>
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <Label id="usage-prices-apply-label" className="shrink-0">
-                <T>Apply to</T>
-              </Label>
-              <Menu>
-                <MenuTrigger
-                  render={<Button variant="outline" size="sm" className="min-w-0" />}
-                  aria-labelledby="usage-prices-apply-label usage-prices-selection"
-                  disabled={pending || hasChanges}
-                >
-                  <span id="usage-prices-selection" className="truncate">
-                    {selectionLabel}
-                  </span>
-                  <ChevronDownIcon className="size-3.5 shrink-0" aria-hidden />
-                </MenuTrigger>
-                <MenuPopup align="start">
-                  <MenuCheckboxItem
-                    checked={selectedIds === null}
-                    closeOnClick={false}
-                    onCheckedChange={(checked) => selectEnvironments(checked ? null : new Set())}
-                  >
-                    <T>All environments</T>
-                  </MenuCheckboxItem>
-                  <MenuSeparator />
-                  {environments.map((environment) => (
-                    <MenuCheckboxItem
-                      key={environment.environmentId}
-                      checked={selectedIds === null || selectedIds.has(environment.environmentId)}
-                      closeOnClick={false}
-                      onCheckedChange={(checked) => {
-                        const next = new Set(selected.map((target) => target.environmentId));
-                        if (checked) next.add(environment.environmentId);
-                        else next.delete(environment.environmentId);
-                        selectEnvironments(next.size === environments.length ? null : next);
-                      }}
-                    >
-                      <span className="flex min-w-0 items-center gap-3">
-                        <span className="min-w-0 flex-1 truncate">{environment.label}</span>
-                        {environment.unavailable ? (
-                          <span className="text-xs text-muted-foreground">
-                            {environment.unavailable}
-                          </span>
-                        ) : null}
-                      </span>
-                    </MenuCheckboxItem>
-                  ))}
-                </MenuPopup>
-              </Menu>
-            </div>
+            <span />
             <span className="text-xs text-muted-foreground">
               <T>USD / million tokens</T>
             </span>
@@ -642,7 +574,7 @@ export function UsagePriceOverrides({
         <DialogFooter variant="bare" className="items-center sm:justify-between">
           <span className="text-xs text-muted-foreground">
             {hasChanges
-              ? gt("Changes apply to {destination}", { destination: destinationLabel })
+              ? gt("Changes apply to {destination}", { destination: gt("this computer") })
               : ""}
           </span>
           <div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto">

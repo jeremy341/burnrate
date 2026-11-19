@@ -1,4 +1,4 @@
-import type { UsageTokenTotals } from "@t3tools/contracts";
+import type { UsageTokenTotals } from "~/contracts";
 import {
   isModelCostUnknown,
   type CategoryCost,
