@@ -9,6 +9,20 @@ import { ProvidersPage } from "~/ProvidersPage";
 
 type View = "usage" | "providers";
 
+/** The app window's title bar takes its color from the theme-color meta tag. */
+function syncTitleBarColor() {
+  requestAnimationFrame(() => {
+    const probe = document.createElement("canvas").getContext("2d");
+    const background = getComputedStyle(document.documentElement).getPropertyValue("--background").trim();
+    if (!probe || !background) return;
+    probe.fillStyle = "#000";
+    probe.fillStyle = background;
+    const color = probe.fillStyle;
+    document.documentElement.style.background = color;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", color);
+  });
+}
+
 function useTheme() {
   const theme = usePrimarySettings((s) => s.theme);
   useEffect(() => {
@@ -17,6 +31,7 @@ function useTheme() {
       const dark = theme === "dark" || (theme === "system" && media.matches);
       document.documentElement.classList.toggle("dark", dark);
       document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      syncTitleBarColor();
     };
     apply();
     media.addEventListener("change", apply);

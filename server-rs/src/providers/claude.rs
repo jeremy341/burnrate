@@ -11,12 +11,6 @@ fn config_dir() -> PathBuf {
 fn credentials_path() -> PathBuf {
     config_dir().join(".credentials.json")
 }
-fn account_path() -> PathBuf {
-    match env_path("CLAUDE_CONFIG_DIR") {
-        Some(d) => d.join(".claude.json"),
-        None => home().join(".claude.json"),
-    }
-}
 
 fn iso(v: Option<&Value>) -> Option<String> {
     let ms = crate::types::parse_rfc3339_ms(v?.as_str()?)?;
@@ -96,32 +90,51 @@ impl Provider for Claude {
         credentials_path().exists()
     }
     fn read(&self, _keys: &KeyStore) -> Vec<Value> {
-        let Some(token) = read_json(&credentials_path()).and_then(|c| c.pointer("/claudeAiOauth/accessToken").and_then(Value::as_str).map(|t| t.trim().to_string())).filter(|t| !t.is_empty()) else {
-            return Vec::new();
-        };
-        let identity = read_json(&account_path()).and_then(|c| c.get("oauthAccount").cloned());
-        let name = identity.as_ref().and_then(|i| i.get("displayName")).and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
-        let mut head = json!({"id": "claude-login", "driver": "claudeAgent", "label": name.clone().unwrap_or_else(|| "Claude login".into()), "plan": "Claude Subscription"});
-        if let Some(n) = &name {
-            head["displayName"] = json!(n);
+        // One account per Claude Code config directory that holds a login (`~/.claude`, `~/.claude-work`, ...).
+        let mut dirs = crate::readers::claude_config_dirs();
+        if dirs.is_empty() {
+            dirs.push(config_dir());
         }
-        if let Some(email) = identity.as_ref().and_then(|i| i.get("emailAddress")).and_then(Value::as_str) {
-            head["email"] = json!(email);
-        }
-        let result = agent()
-            .get("https://api.anthropic.com/api/oauth/usage?skip_spend=1")
-            .set("Authorization", &format!("Bearer {token}"))
-            .set("anthropic-beta", "oauth-2025-04-20")
-            // The endpoint can answer 429 without a Claude Code user agent.
-            .set("User-Agent", "claude-code/2.1.273")
-            .call();
-        match result {
-            Ok(res) => match res.into_json::<Value>() {
-                Ok(usage) => vec![account_with(head, usage_to_windows(&usage))],
-                Err(e) => vec![unavailable_account(head, format!("Claude usage unavailable ({e})."))],
-            },
-            Err(ureq::Error::Status(code, _)) => vec![unavailable_account(head, format!("Claude usage unavailable (HTTP {code})."))],
-            Err(_) => vec![unavailable_account(head, "Claude usage unavailable (error).".into())],
-        }
+        let default_dir = home().join(".claude");
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = dirs
+                .iter()
+                .filter(|dir| dir.join(".credentials.json").exists())
+                .map(|dir| {
+                    let account_file = if **dir == default_dir { home().join(".claude.json") } else { dir.join(".claude.json") };
+                    let id = dir.file_name().map(|n| n.to_string_lossy().trim_start_matches('.').to_string()).unwrap_or_else(|| "claude".into());
+                    scope.spawn(move || read_account(dir, &account_file, &id))
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+        })
     }
+}
+
+fn read_account(dir: &std::path::Path, account_file: &std::path::Path, id: &str) -> Option<Value> {
+    let token = read_json(&dir.join(".credentials.json")).and_then(|c| c.pointer("/claudeAiOauth/accessToken").and_then(Value::as_str).map(|t| t.trim().to_string())).filter(|t| !t.is_empty())?;
+    let identity = read_json(account_file).and_then(|c| c.get("oauthAccount").cloned());
+    let name = identity.as_ref().and_then(|i| i.get("displayName")).and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    let mut head = json!({"id": format!("claude-{id}"), "driver": "claudeAgent", "label": name.clone().unwrap_or_else(|| id.to_string()), "plan": "Claude Subscription"});
+    if let Some(n) = &name {
+        head["displayName"] = json!(n);
+    }
+    if let Some(email) = identity.as_ref().and_then(|i| i.get("emailAddress")).and_then(Value::as_str) {
+        head["email"] = json!(email);
+    }
+    let result = agent()
+        .get("https://api.anthropic.com/api/oauth/usage?skip_spend=1")
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("anthropic-beta", "oauth-2025-04-20")
+        // The endpoint can answer 429 without a Claude Code user agent.
+        .set("User-Agent", "claude-code/2.1.273")
+        .call();
+    Some(match result {
+        Ok(res) => match res.into_json::<Value>() {
+            Ok(usage) => account_with(head, usage_to_windows(&usage)),
+            Err(e) => unavailable_account(head, format!("Claude usage unavailable ({e}).")),
+        },
+        Err(ureq::Error::Status(code, _)) => unavailable_account(head, format!("Claude usage unavailable (HTTP {code}).")),
+        Err(_) => unavailable_account(head, "Claude usage unavailable (error).".into()),
+    })
 }
