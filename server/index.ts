@@ -6,12 +6,15 @@ import { fileURLToPath } from "node:url";
 import type { LimitsAccount, LimitsReport, ProviderInfo } from "../src/contracts.ts";
 import { createKeyStore } from "./keys.ts";
 import { PROVIDERS } from "./providers/index.ts";
+import { createUsageEngine } from "./usage/engine.ts";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const port = Number(process.env.BURNRATE_PORT ?? 13790);
 const dataDir = resolve(process.env.BURNRATE_DATA ?? join(root, "data"));
 const webDir = join(root, "dist", "web");
 const keys = createKeyStore(dataDir);
+const usage = createUsageEngine({ dataDir });
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -84,6 +87,15 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, path: string
   }
   if (path === "/api/providers" && method === "GET") return json(res, 200, providerInfo());
   if (path === "/api/limits" && method === "GET") return json(res, 200, await limitsReport());
+  if (path === "/api/usage" && method === "GET") {
+    const q = new URL(req.url ?? "", "http://x").searchParams;
+    const since = q.get("since") ?? "";
+    const until = q.get("until") ?? "";
+    if (!DAY.test(since) || !DAY.test(until)) return json(res, 400, { error: "invalid window" });
+    const timeZone = q.get("tz") || "UTC";
+    const resolution = q.get("resolution") === "hour" ? "hour" : "day";
+    return json(res, 200, await usage.summary({ sinceDay: since, untilDay: until, timeZone, resolution }));
+  }
   const match = KEY_ROUTE.exec(path);
   if (match) {
     const provider = PROVIDERS.find((p) => p.id === match[1] && p.auth === "apiKey");
@@ -132,4 +144,7 @@ const server = createServer((req, res) => {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Burnrate listening on http://127.0.0.1:${port}`);
+  // Read the transcripts once in the background so the first Cost view does not wait for a cold scan.
+  const today = new Date().toISOString().slice(0, 10);
+  void usage.summary({ sinceDay: today, untilDay: today, timeZone: "UTC" }).catch(() => undefined);
 });

@@ -67,3 +67,86 @@ export interface ProviderInfo {
   readonly connected: boolean;
   readonly accounts: readonly { readonly id: string; readonly label: string }[];
 }
+
+// ---- Cost and tokens ----
+
+export type UsageProviderKind = string;
+export type UsageDay = string;
+export type UsageCostSource = "providerReported" | "modelPriced" | "unpriced";
+
+/** Reasoning tokens are already included in output; input is uncached + cache reads + cache writes. */
+export interface UsageTokenTotals {
+  uncachedInputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+}
+
+export interface UsageCategoryCost {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+}
+
+export interface UsageModelPriceOverride {
+  inputCostPerMillionTokens: number;
+  outputCostPerMillionTokens: number;
+  cacheReadCostPerMillionTokens?: number;
+  cacheWriteCostPerMillionTokens?: number;
+}
+
+export interface UsageBucket {
+  day: UsageDay;
+  hourStart?: string;
+  provider: UsageProviderKind;
+  model: string;
+  totals: UsageTokenTotals;
+  costUsd: number;
+  cacheSavingsUsd: number;
+  categoryCostUsd?: UsageCategoryCost;
+  fastCostUsd?: number;
+  ultrafastCostUsd?: number;
+  speedPremiumUsd?: number;
+  costSource: UsageCostSource;
+  records: number;
+  unpricedRecords: number;
+  unpricedTokens?: number;
+  sessions: number;
+}
+
+export interface UsageSource {
+  provider: UsageProviderKind;
+  path: string;
+  status: "ok" | "missing" | "partial" | "failed";
+  scannedFiles: number;
+  malformedRecords: number;
+  distinctSessions: number;
+  message: string | null;
+}
+
+export interface UsagePricing {
+  status: "fresh" | "cached" | "unavailable";
+  source: string;
+  fetchedAt: string | null;
+  knownModels: number;
+}
+
+export interface UsageSummaryInput {
+  sinceDay: UsageDay;
+  untilDay: UsageDay;
+  timeZone: string;
+  resolution?: "day" | "hour";
+}
+
+export interface UsageSummary {
+  readAt: string;
+  timeZone: string;
+  sinceDay: UsageDay;
+  untilDay: UsageDay;
+  buckets: UsageBucket[];
+  sources: UsageSource[];
+  pricing: UsagePricing;
+  scanDurationMs: number;
+}
