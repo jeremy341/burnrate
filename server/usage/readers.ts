@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import type { UsageTokenTotals } from "../../src/contracts.ts";
+import { antigravityReader } from "./antigravity.ts";
 import { parseTimestampMs, tokenCount, totalTokens, type UsageRecord, type UsageSpeed } from "./types.ts";
 
 export interface ReadResult {
@@ -621,4 +622,267 @@ export const opencodeReader: SourceReader = {
   },
 };
 
-export const READERS: readonly SourceReader[] = [claudeReader, codexReader, opencodeReader];
+// ---------------------------------------------------------------- Grok
+
+const GROK_TICKS_PER_DOLLAR = 10_000_000_000;
+const grokCost = (ticks: unknown): number | null =>
+  typeof ticks === "number" && Number.isFinite(ticks) && ticks >= 0 ? ticks / GROK_TICKS_PER_DOLLAR : null;
+
+interface GrokTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cachedReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  costUsdTicks: number | null;
+}
+
+function readGrokTotals(value: unknown): GrokTotals | null {
+  if (typeof value !== "object" || value === null) return null;
+  const r = value as Record<string, unknown>;
+  return {
+    inputTokens: tokenCount(r["inputTokens"]),
+    outputTokens: tokenCount(r["outputTokens"]),
+    cachedReadTokens: tokenCount(r["cachedReadTokens"]),
+    cacheCreationTokens: tokenCount(r["cacheCreationTokens"]),
+    reasoningTokens: tokenCount(r["reasoningTokens"]),
+    costUsdTicks: typeof r["costUsdTicks"] === "number" && Number.isFinite(r["costUsdTicks"]) ? r["costUsdTicks"] : null,
+  };
+}
+
+function grokToUsage(t: GrokTotals): UsageTokenTotals {
+  // Grok reports `inputTokens` inclusive of the cached portion, like Codex.
+  return {
+    uncachedInputTokens: Math.max(0, t.inputTokens - t.cachedReadTokens - t.cacheCreationTokens),
+    cachedInputTokens: t.cachedReadTokens,
+    cacheCreationTokens: t.cacheCreationTokens,
+    outputTokens: t.outputTokens,
+    reasoningTokens: Math.min(t.outputTokens, t.reasoningTokens),
+  };
+}
+
+export function parseGrokLine(line: string): UsageRecord[] {
+  if (!line.includes('"turn_completed"')) return [];
+  let rec: Record<string, unknown>;
+  try {
+    rec = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const params = rec["params"] as Record<string, unknown> | undefined;
+  const update = params?.["update"] as Record<string, unknown> | undefined;
+  if (!params || !update || update["sessionUpdate"] !== "turn_completed") return [];
+  const usage = update["usage"] as Record<string, unknown> | undefined;
+  if (typeof usage !== "object" || usage === null) return [];
+  const sessionId = typeof params["sessionId"] === "string" ? params["sessionId"] : "";
+  const promptId = typeof update["prompt_id"] === "string" ? update["prompt_id"] : null;
+  let timestampMs: number | null = null;
+  const meta = params["_meta"] as Record<string, unknown> | undefined;
+  if (typeof meta?.["agentTimestampMs"] === "number" && Number.isFinite(meta["agentTimestampMs"])) timestampMs = meta["agentTimestampMs"];
+  if (timestampMs === null && typeof rec["timestamp"] === "number" && Number.isFinite(rec["timestamp"])) {
+    timestampMs = rec["timestamp"] > 1e12 ? rec["timestamp"] : rec["timestamp"] * 1000;
+  }
+  if (timestampMs === null) return [];
+  const top = readGrokTotals(usage);
+  if (top === null) return [];
+  const entries: Array<{ model: string; totals: GrokTotals }> = [];
+  const modelUsage = usage["modelUsage"];
+  if (typeof modelUsage === "object" && modelUsage !== null) {
+    for (const [model, raw] of Object.entries(modelUsage as Record<string, unknown>)) {
+      const totals = model ? readGrokTotals(raw) : null;
+      if (totals) entries.push({ model, totals });
+    }
+  }
+  if (entries.length === 0) {
+    if (totalTokens(grokToUsage(top)) === 0) return [];
+    return [{ provider: "grok", timestampMs, model: "grok", sessionId, totals: grokToUsage(top), reportedCostUsd: grokCost(top.costUsdTicks), speed: "standard", dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:${timestampMs}:grok` }];
+  }
+  const topCost = grokCost(top.costUsdTicks);
+  let tickedCost = 0;
+  let unticked = 0;
+  for (const e of entries) {
+    const tokens = totalTokens(grokToUsage(e.totals));
+    if (tokens === 0) continue;
+    if (e.totals.costUsdTicks !== null) tickedCost += grokCost(e.totals.costUsdTicks) ?? 0;
+    else unticked += tokens;
+  }
+  const remaining = topCost === null ? null : Math.max(0, topCost - tickedCost);
+  const out: UsageRecord[] = [];
+  for (const e of entries) {
+    const totals = grokToUsage(e.totals);
+    if (totalTokens(totals) === 0) continue;
+    let reported = grokCost(e.totals.costUsdTicks);
+    if (reported === null && remaining !== null && unticked > 0) reported = remaining * (totalTokens(totals) / unticked);
+    out.push({ provider: "grok", timestampMs, model: e.model, sessionId, totals, reportedCostUsd: reported, speed: "standard", dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:${timestampMs}:${e.model}` });
+  }
+  return out;
+}
+
+const grokHome = () => process.env.GROK_HOME?.trim() || join(homedir(), ".grok");
+
+export const grokReader: SourceReader = {
+  provider: "grok",
+  dir: () => join(grokHome(), "sessions"),
+  files() {
+    // Only updates.jsonl carries usage; skip the large chat history and event logs.
+    return walk(this.dir(), (n) => n === "updates.jsonl");
+  },
+  read(path, sinceMs) {
+    const records: UsageRecord[] = [];
+    for (const line of lines(path)) for (const r of parseGrokLine(line)) if (r.timestampMs >= sinceMs) records.push(r);
+    return { records, malformed: 0 };
+  },
+};
+
+// ---------------------------------------------------------------- Pi
+
+export function parsePiFile(content: string[]): UsageRecord[] {
+  const records: UsageRecord[] = [];
+  let sessionId = "";
+  for (const line of content) {
+    if (!line.includes('"usage"') && !line.includes('"session"')) continue;
+    let e: Record<string, unknown>;
+    try {
+      e = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (e["type"] === "session" && typeof e["id"] === "string") {
+      sessionId = e["id"];
+      continue;
+    }
+    const id = e["id"];
+    const timestamp = e["timestamp"];
+    if (typeof id !== "string" || typeof timestamp !== "string") continue;
+    let source: Record<string, unknown> | undefined;
+    if (e["type"] === "message") {
+      const message = e["message"] as Record<string, unknown> | undefined;
+      if (message?.["role"] === "assistant" || message?.["role"] === "toolResult") source = message;
+    } else if (e["type"] === "usage" || e["type"] === "compaction" || e["type"] === "branch_summary") {
+      source = e;
+    }
+    const usage = source?.["usage"] as Record<string, unknown> | undefined;
+    if (!source || typeof usage !== "object" || usage === null) continue;
+    const ts = parseTimestampMs(timestamp);
+    if (ts === null) continue;
+    const provider = typeof source["provider"] === "string" ? source["provider"] : undefined;
+    const modelName = typeof source["model"] === "string" ? source["model"] : undefined;
+    const rateModel = provider && modelName ? (typeof source["responseModel"] === "string" ? source["responseModel"] : modelName) : undefined;
+    // Auxiliary tool and summary records lack model attribution.
+    const model = provider && rateModel ? `${provider}/${rateModel}` : "Tools/summaries";
+    const output = tokenCount(usage["output"]);
+    const totals: UsageTokenTotals = {
+      // Pi's input and cache counters are already disjoint.
+      uncachedInputTokens: tokenCount(usage["input"]),
+      cachedInputTokens: tokenCount(usage["cacheRead"]),
+      cacheCreationTokens: tokenCount(usage["cacheWrite"]),
+      outputTokens: output,
+      reasoningTokens: Math.min(output, tokenCount(usage["reasoning"])),
+    };
+    const cost = (usage["cost"] as Record<string, unknown> | undefined)?.["total"];
+    const reported = typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null;
+    if (totalTokens(totals) === 0 && reported === null) continue;
+    records.push({
+      provider: "pi",
+      timestampMs: ts,
+      model,
+      ...(rateModel === undefined ? {} : { rateModel }),
+      sessionId,
+      totals,
+      reportedCostUsd: reported,
+      speed: "standard",
+      // Forks keep ids and timestamps; the model keeps short random ids from colliding across sessions.
+      dedupeKey: JSON.stringify(["pi", id, timestamp, model]),
+    });
+  }
+  return records;
+}
+
+const piSessionsDir = () => {
+  const sessionDir = process.env.PI_CODING_AGENT_SESSION_DIR?.trim();
+  if (sessionDir) return resolve(sessionDir);
+  const agentDir = process.env.PI_CODING_AGENT_DIR?.trim();
+  return join(agentDir ? resolve(agentDir) : join(homedir(), ".pi", "agent"), "sessions");
+};
+
+export const piReader: SourceReader = {
+  provider: "pi",
+  dir: piSessionsDir,
+  files() {
+    return walk(this.dir(), (n) => n.endsWith(".jsonl"));
+  },
+  read(path, sinceMs) {
+    return { records: parsePiFile(lines(path)).filter((r) => r.timestampMs >= sinceMs), malformed: 0 };
+  },
+};
+
+// ---------------------------------------------------------------- Muse
+
+export function parseMuseLine(line: string): UsageRecord[] {
+  if (!line.includes('"model_completed"') && !line.includes('"automated_review_completed"')) return [];
+  let e: Record<string, unknown>;
+  try {
+    e = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  if (e["schema_version"] !== 1 || e["record_type"] !== "event" || e["payload_type"] !== "runtime.session") return [];
+  const recordedAt = e["recorded_at"];
+  const id = e["id"];
+  const stream = e["stream"] as Record<string, unknown> | undefined;
+  const payload = e["payload"] as Record<string, unknown> | undefined;
+  const event = payload?.["event"] as Record<string, unknown> | undefined;
+  if (typeof recordedAt !== "number" || !Number.isSafeInteger(recordedAt) || recordedAt < 0) return [];
+  if (typeof id !== "string" || typeof stream?.["id"] !== "string" || !event) return [];
+  if (event["kind"] !== "model_completed" && event["kind"] !== "automated_review_completed") return [];
+  const modelRef = event["model"];
+  const model = typeof modelRef === "string" ? modelRef : typeof (modelRef as Record<string, unknown> | undefined)?.["model_id"] === "string" ? ((modelRef as Record<string, unknown>)["model_id"] as string) : "";
+  const usage = event["usage"] as Record<string, unknown> | undefined;
+  if (!model || typeof usage !== "object" || usage === null) return [];
+  const input = tokenCount(usage["input_tokens"]);
+  const cached = Math.min(input, tokenCount(usage["cache_read_tokens"] ?? usage["cached_input_tokens"] ?? usage["cached_tokens"]));
+  const written = Math.min(input - cached, tokenCount(usage["cache_write_tokens"]));
+  const output = tokenCount(usage["output_tokens"]);
+  const totals: UsageTokenTotals = {
+    // Muse's cache counters are subsets of input; reasoning is a subset of output.
+    uncachedInputTokens: input - cached - written,
+    cachedInputTokens: cached,
+    cacheCreationTokens: written,
+    outputTokens: output,
+    reasoningTokens: Math.min(output, tokenCount(usage["reasoning_tokens"])),
+  };
+  if (totalTokens(totals) === 0) return [];
+  const source = typeof payload?.["source_run_record_id"] === "string" ? (payload["source_run_record_id"] as string) : id;
+  return [
+    {
+      provider: "muse",
+      // recorded_at is in microseconds.
+      timestampMs: Math.trunc(recordedAt / 1_000),
+      model,
+      sessionId: stream["id"] as string,
+      totals,
+      reportedCostUsd: null,
+      speed: "standard",
+      // Envelopes can be copied into another session; the source record identifies the inference.
+      dedupeKey: JSON.stringify(["muse", source]),
+    },
+  ];
+}
+
+const museHome = () => process.env.MUSE_HOME?.trim() || join(homedir(), ".muse");
+
+export const museReader: SourceReader = {
+  provider: "muse",
+  dir: () => join(museHome(), "sessions"),
+  files() {
+    return walk(this.dir(), (n) => n === "session.jsonl");
+  },
+  read(path, sinceMs) {
+    const records: UsageRecord[] = [];
+    for (const line of lines(path)) for (const r of parseMuseLine(line)) if (r.timestampMs >= sinceMs) records.push(r);
+    return { records, malformed: 0 };
+  },
+};
+
+
+export const READERS: readonly SourceReader[] = [claudeReader, codexReader, opencodeReader, antigravityReader, grokReader, piReader, museReader];

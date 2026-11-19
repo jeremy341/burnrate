@@ -13,8 +13,8 @@ export interface ProviderModule {
   readonly id: string;
   readonly label: string;
   readonly color: string;
-  /** apiKey: the user pastes keys. localLogin: read an existing CLI login. */
-  readonly auth: "apiKey" | "localLogin";
+  /** apiKey: the user pastes keys. localLogin: read an existing CLI login. localLogs: usage from transcripts only. */
+  readonly auth: "apiKey" | "localLogin" | "localLogs";
   /** Whether a local login exists (localLogin only). */
   hasLogin?(): boolean;
   read(keys: KeyStore): Promise<LimitsAccount[]>;

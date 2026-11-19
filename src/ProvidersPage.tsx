@@ -69,7 +69,13 @@ function ProviderCard({ provider, onChanged }: { provider: ProviderInfo; onChang
           {provider.connected ? "Connected" : "Not connected"}
         </span>
       </div>
-      {provider.auth === "localLogin" ? (
+      {provider.auth === "localLogs" ? (
+        <p className="text-xs text-muted-foreground">
+          {provider.connected
+            ? "Cost and tokens are read from this computer's session files. This provider has no limits to show."
+            : "No session files found on this computer yet."}
+        </p>
+      ) : provider.auth === "localLogin" ? (
         <p className="text-xs text-muted-foreground">
           {provider.connected
             ? "Using the login already on this computer. Nothing to enter."

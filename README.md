@@ -15,7 +15,8 @@ Data (encrypted keys) lives in `data/` (override with `BURNRATE_DATA`). Port: `B
 
 ## Status
 - Views: Cost, Tokens, Limits and Providers. Dark and light mode.
-- Limits: Claude Code, OpenCode Go, Codex (local logins), Mistral (API keys).
+- Limits: Claude Code, Codex, Grok, OpenCode Go (local logins), Cursor and Mistral (API keys).
+- Cost and tokens only (no limits API): Antigravity, Pi, Muse Code.
 - Cost and tokens are read from local transcripts: Claude (all `~/.claude*` accounts), Codex (including
   archived sessions), OpenCode. Prices come from LiteLLM and can be overridden per model.
 - Totals match T3 Code within a few percent on the same data (Codex service tiers are not resolved yet).
