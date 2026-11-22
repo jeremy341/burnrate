@@ -1,0 +1,96 @@
+/* Accessibility layer (forced-colors, high contrast, reduced motion). Owned by the limits-a11y package. */
+
+/* burnrate: bars carry colour plus a shape/pattern, so "ahead of pace" stays distinguishable
+   without colour. The text alternative lives in the meter's aria-valuetext and the pace icon. */
+.br-usage-meter[data-pace="ahead"] .br-usage-meter__fill {
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgb(255 255 255 / 0.55) 0 1px,
+    transparent 1px 5px
+  );
+}
+
+@media (forced-colors: active) {
+  .br-usage-meter {
+    border: 1px solid CanvasText;
+    background-color: Canvas !important;
+  }
+  .br-usage-meter__fill {
+    background-color: Highlight !important;
+    opacity: 1 !important;
+  }
+  .br-usage-meter[data-pace="ahead"] .br-usage-meter__fill {
+    background-image: repeating-linear-gradient(135deg, CanvasText 0 1px, Highlight 1px 5px) !important;
+  }
+  .br-usage-meter__tick {
+    background-color: CanvasText !important;
+  }
+  .br-usage-provenance,
+  .br-usage-stale,
+  .br-usage-balance,
+  .br-usage-balances {
+    border-color: CanvasText;
+    color: CanvasText;
+  }
+  /* burnrate: the tightest window's ring is a box-shadow, which forced colours removes. */
+  [data-slot="limits-summary"] [data-worst] {
+    outline: 1px solid CanvasText;
+  }
+}
+
+/* burnrate: appearance extras set these attributes; our additions never animate there either. */
+@media (prefers-reduced-motion: reduce) {
+  .br-usage-meter,
+  .br-usage-meter__fill,
+  .br-usage-meter__tick,
+  .br-usage-provenance,
+  .br-usage-stale,
+  .br-usage-balance {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+html[data-reduce-motion] .br-usage-meter,
+html[data-reduce-motion] .br-usage-meter__fill,
+html[data-reduce-motion] .br-usage-meter__tick,
+html[data-reduce-motion] .br-usage-provenance,
+html[data-reduce-motion] .br-usage-stale,
+html[data-reduce-motion] .br-usage-balance {
+  animation: none !important;
+  transition: none !important;
+}
+
+html[data-high-contrast] .br-usage-meter {
+  border: 1px solid currentColor;
+}
+html[data-high-contrast] .br-usage-meter__fill {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+}
+html[data-high-contrast] .br-usage-meter__tick {
+  background-color: currentColor;
+}
+html[data-high-contrast] .br-usage-provenance,
+html[data-high-contrast] .br-usage-stale {
+  border-color: currentColor;
+}
+
+/* Dividers and input outlines get a stronger floor when the user asks for more contrast, either
+   through the OS (prefers-contrast) or Settings -> Appearance -> High contrast. Same specificity as
+   the index.css dark variant (:root:is(.dark, .dark *)) and loaded after it. WCAG 1.4.11 asks 3:1
+   for the boundary of a control; the card and section lines stay decorative but become obvious. */
+@media (prefers-contrast: more) {
+  :root,
+  :root:is(.dark, .dark *) {
+    --divider-floor: 22%;
+    --divider-floor-input: 40%;
+  }
+}
+
+:root[data-high-contrast],
+:root[data-high-contrast]:is(.dark, .dark *) {
+  --divider-floor: 22%;
+  --divider-floor-input: 40%;
+}
+

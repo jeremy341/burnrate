@@ -1,0 +1,101 @@
+/* Burnrate-only appearance layer (reduce motion, high contrast). Radius, spacing and scale are fixed T3 tokens. */
+
+/* ---------------------------------------------------------------------------
+ * Reduce motion
+ * `appearance.ts` writes `on`/`off`; the system setting can also report `reduce`. Accept all of
+ * them (and the older `true`) so either call site works. With no attribute the
+ * OS preference wins through the media query.
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-reduce-motion="off"]) {
+    scroll-behavior: auto;
+  }
+
+  html:not([data-reduce-motion="off"]) *,
+  html:not([data-reduce-motion="off"]) *::before,
+  html:not([data-reduce-motion="off"]) *::after {
+    animation-delay: 0s !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+html[data-reduce-motion="on"],
+html[data-reduce-motion="reduce"],
+html[data-reduce-motion="true"] {
+  scroll-behavior: auto;
+}
+
+html[data-reduce-motion="on"] *,
+html[data-reduce-motion="on"] *::before,
+html[data-reduce-motion="on"] *::after,
+html[data-reduce-motion="reduce"] *,
+html[data-reduce-motion="reduce"] *::before,
+html[data-reduce-motion="reduce"] *::after,
+html[data-reduce-motion="true"] *,
+html[data-reduce-motion="true"] *::before,
+html[data-reduce-motion="true"] *::after {
+  animation-delay: 0s !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-delay: 0s !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * High contrast
+ * Strengthen the semantic tokens the theme pipeline already publishes instead
+ * of hard-coding colours: borders and muted labels are mixed toward the theme
+ * foreground, which works for every light/dark/custom palette. T3's numeric
+ * contrast chain (`--contrast-*`) is untouched.
+ * ------------------------------------------------------------------------- */
+html[data-high-contrast="true"] {
+  --burnrate-hc-border: color-mix(in oklab, var(--foreground) 55%, var(--background));
+  --burnrate-hc-muted: color-mix(in oklab, var(--foreground) 82%, var(--background));
+  --border: var(--burnrate-hc-border);
+  --input: var(--burnrate-hc-border);
+  --sidebar-border: var(--burnrate-hc-border);
+  --muted-foreground: var(--burnrate-hc-muted);
+  --secondary-label: var(--burnrate-hc-muted);
+  --icon-muted: var(--burnrate-hc-muted);
+  --placeholder: var(--burnrate-hc-muted);
+}
+
+/* Honour an OS "more contrast" preference when the user has not opted in. */
+@media (prefers-contrast: more) {
+  html:not([data-high-contrast]) {
+    --burnrate-hc-border: color-mix(in oklab, var(--foreground) 55%, var(--background));
+    --burnrate-hc-muted: color-mix(in oklab, var(--foreground) 82%, var(--background));
+    --border: var(--burnrate-hc-border);
+    --input: var(--burnrate-hc-border);
+    --sidebar-border: var(--burnrate-hc-border);
+    --muted-foreground: var(--burnrate-hc-muted);
+    --secondary-label: var(--burnrate-hc-muted);
+    --icon-muted: var(--burnrate-hc-muted);
+    --placeholder: var(--burnrate-hc-muted);
+  }
+}
+
+html[data-high-contrast="true"] :where(a, button, input, select, textarea, [role="button"]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+html[data-high-contrast="true"] [data-slot="settings-group"] {
+  border-color: var(--border);
+}
+
+@media (forced-colors: active) {
+  /* Let the platform palette win; never mix theme colours into system colors. */
+  html[data-high-contrast="true"] {
+    --burnrate-hc-border: CanvasText;
+    --burnrate-hc-muted: CanvasText;
+    --border: CanvasText;
+    --input: CanvasText;
+    --sidebar-border: CanvasText;
+  }
+}
