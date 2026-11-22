@@ -1,4 +1,5 @@
-import { getActiveLocale, m, msg, type MFunctionType as MessageResolver } from "~/i18n";
+import { msg } from "~/t3-shims/gt-react";
+import { getActiveLocale, m, type MessageResolver } from "~/t3-shims/i18nMessages";
 
 export type TimestampFormat = "locale" | "12-hour" | "24-hour";
 const DEFAULT_LOCALE = "en";

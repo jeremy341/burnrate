@@ -1,4 +1,5 @@
 import type {
+  Provenance,
   ResetCredits as ServerProviderResetCredits,
   UsageLimits as ServerProviderUsageLimits,
   UsageWindow as ServerProviderUsageWindow,
@@ -7,7 +8,9 @@ import { mFallback, msg, type MFunctionType } from "~/i18n";
 
 import {
   cursorUsageWindowDetails as cursorUsageWindowDetailsBase,
+  isLimitSnapshotStale,
   type LimitPool,
+  type ProjectedEmpty,
   type ResetCreditChoice,
   resetCountdown,
 } from "./usageLimits";
@@ -72,6 +75,49 @@ export function formatDuration(ms: number, resolve: MFunctionType = mFallback): 
   if (days > 0) return resolve(msg("{days}d {hours}h", { days, hours }));
   if (hours > 0) return resolve(msg("{hours}h {minutes}m", { hours, minutes }));
   return resolve(msg("{minutes}m", { minutes }));
+}
+
+export interface LimitFreshness {
+  readonly short: string;
+  readonly message: string;
+  readonly description: string;
+}
+
+export function limitFreshness(
+  limits: ServerProviderUsageLimits,
+  now: number,
+  refreshIntervalSec: number,
+  resolve: MFunctionType = mFallback,
+): LimitFreshness | null {
+  if (!isLimitSnapshotStale(limits, now, refreshIntervalSec)) return null;
+
+  const cachedAt = limits.staleSince === undefined ? NaN : Date.parse(limits.staleSince);
+  const readAt = Number.isFinite(cachedAt) ? cachedAt : Date.parse(limits.checkedAt);
+  const age = now - readAt;
+  const duration = age >= MINUTE ? formatDuration(age, resolve) : null;
+  const message = limits.staleMessage || staleAgeMessage(age, resolve);
+  const description = limits.staleReason
+    ? `${message}${/[.!?]$/.test(message) ? " " : ". "}${limits.staleReason}`
+    : message;
+
+  return {
+    short: duration === null ? resolve(msg("Old data")) : resolve(msg("{duration} old", { duration })),
+    message,
+    description,
+  };
+}
+
+function staleAgeMessage(age: number, resolve: MFunctionType): string {
+  if (age >= DAY) {
+    return resolve(msg("Showing values from {count, plural, one {{count} day} other {{count} days}} ago", { count: Math.floor(age / DAY) }));
+  }
+  if (age >= HOUR) {
+    return resolve(msg("Showing values from {count, plural, one {{count} hour} other {{count} hours}} ago", { count: Math.floor(age / HOUR) }));
+  }
+  if (age >= MINUTE) {
+    return resolve(msg("Showing values from {count, plural, one {{count} minute} other {{count} minutes}} ago", { count: Math.floor(age / MINUTE) }));
+  }
+  return resolve(msg("Showing the last known values"));
 }
 
 /** @public */
@@ -161,4 +207,74 @@ export function formatResetsIn(
   }
   if (style === "refill") return resolve(msg("↻ {duration}", { duration }));
   return resolve(msg("resets in {duration}", { duration }));
+}
+
+// burnrate: the short badge text and its full, tooltip/aria explanation for each source.
+const PROVENANCE_COPY: Readonly<
+  Record<Provenance, { readonly short: string; readonly description: string }>
+> = {
+  official: {
+    short: msg("Official"),
+    description: msg("From the provider's documented API."),
+  },
+  unofficial: {
+    short: msg("Unofficial"),
+    description: msg("From an undocumented endpoint; it may change without notice."),
+  },
+  statusline: {
+    short: msg("Statusline"),
+    description: msg("Reported by Claude Code's statusline."),
+  },
+  local: {
+    short: msg("Local"),
+    description: msg("Measured locally from your own usage records."),
+  },
+  estimated: {
+    short: msg("Estimated"),
+    description: msg("Estimated from the data available; treat it as approximate."),
+  },
+};
+
+/** @public burnrate */
+export function provenanceShortLabel(provenance: Provenance, resolve: MFunctionType = mFallback) {
+  return resolve(PROVENANCE_COPY[provenance].short);
+}
+
+/** @public burnrate */
+export function provenanceDescription(provenance: Provenance, resolve: MFunctionType = mFallback) {
+  return resolve(PROVENANCE_COPY[provenance].description);
+}
+
+/** @public burnrate: a human-readable reading of the value a meter bar represents. */
+export function barValueText(
+  value: number,
+  mode: "remaining" | "used",
+  resolve: MFunctionType = mFallback,
+) {
+  return mode === "used"
+    ? resolve(msg("{value}% used", { value }))
+    : resolve(msg("{value}% left", { value }));
+}
+
+/** @public burnrate: short "runs out in ..." copy for a projected exhaustion. */
+export function formatTimeToEmpty(
+  empty: ProjectedEmpty,
+  now: number,
+  resolve: MFunctionType = mFallback,
+) {
+  return resolve(msg("empty in {duration}", { duration: formatDuration(empty.at - now, resolve) }));
+}
+
+/** @public burnrate: money-shaped balance amount, with a plain fallback for unknown currencies. */
+export function formatMoney(amount: number, currency: string, locale?: string) {
+  try {
+    return new Intl.NumberFormat(locale === undefined || locale === "en" ? "en-US" : locale, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${currency} ${amount.toFixed(2)}`;
+  }
 }
