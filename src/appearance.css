@@ -89,6 +89,99 @@ html[data-high-contrast="true"] [data-slot="settings-group"] {
   border-color: var(--border);
 }
 
+/* Burnrate motion policy. Keep frequently used navigation and layout changes immediate. */
+:where([class~="transition"], [class*="transition-colors"], [class*="transition-shadow"], [class*="transition-all"],
+  [class*="transition-[color"], [class*="transition-[background-color"]) {
+  transition: none !important;
+}
+
+[data-screen-active],
+[data-slot="connected-accounts"] > li,
+[data-slot="provider-row"],
+[data-slot="settings-group"] > [data-slot="settings-row"] {
+  animation: none !important;
+  transition: none !important;
+}
+
+@starting-style {
+  [data-slot="connected-accounts"] > li,
+  [data-slot="provider-row"],
+  [data-slot="settings-group"] > [data-slot="settings-row"] { opacity: 1; }
+}
+
+[data-slot="collapsible-panel"],
+[data-slot="animated-height"],
+[data-slot="collapsible-trigger"] svg,
+[data-slot="popover-positioner"],
+[data-slot="tooltip-positioner"],
+[data-slot="command-dialog-backdrop"],
+[data-slot="command-dialog-popup"] {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* The explicit Off setting overrides the OS for the two visible loading indicators too. */
+html[data-reduce-motion="off"] .motion-safe\:visible-animate-spin {
+  animation: var(--animate-spin);
+  animation-play-state: var(--visible-animation-state, paused);
+  will-change: var(--visible-animation-will-change, auto);
+}
+html[data-reduce-motion="off"] .motion-safe\:animate-skeleton {
+  animation: var(--animate-skeleton);
+}
+
+[data-slot="command-dialog-popup"]:is([data-starting-style], [data-ending-style]),
+[data-slot="command-dialog-backdrop"]:is([data-starting-style], [data-ending-style]) {
+  opacity: 1 !important;
+  scale: 1 !important;
+  translate: 0 !important;
+}
+
+[data-slot="popover-popup"],
+[data-slot="tooltip-popup"],
+[data-slot="dialog-popup"],
+[data-slot="dialog-backdrop"] {
+  transition: opacity 160ms var(--motion-ease) !important;
+}
+
+/* Switch thumbs move directly to the selected position without a delayed stretch. */
+[data-slot="switch"],
+[data-slot="menu-checkbox-item"] > :is(span[data-checked], span[data-unchecked]) {
+  transition: none !important;
+}
+[data-slot="switch-thumb"],
+[data-slot="menu-checkbox-item"] > :is(span[data-checked], span[data-unchecked]) > span {
+  scale: 1 !important;
+  border-radius: 50% !important;
+  transition: translate 120ms var(--motion-ease) !important;
+}
+
+/* One pointer press treatment for T3 buttons; keyboard focus remains immediate. */
+:is([data-slot="button"], [data-slot="inline-button"]) {
+  scale: 1 !important;
+  will-change: auto !important;
+  transition: scale 120ms var(--motion-ease) !important;
+}
+@media (hover: hover) and (pointer: fine) {
+  html:not([data-reduce-motion="on"]) :is([data-slot="button"], [data-slot="inline-button"]):active:not(:focus-visible):not([aria-haspopup]):not(:disabled):not([aria-disabled="true"]) {
+    scale: 0.98 !important;
+  }
+}
+
+/* Search destination remains visible while keyboard focus is on it. */
+[data-settings-page-scroll] div.settings-search-target-pulse,
+[data-settings-page-scroll] section.settings-search-target-pulse > div:first-child {
+  animation: none !important;
+}
+[data-settings-page-scroll] .settings-search-target-pulse:focus-visible {
+  outline: 2px solid var(--ring) !important;
+  outline-offset: -2px;
+}
+[data-settings-page-scroll] :is(section, [data-slot="settings-row"])[tabindex="-1"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
 @media (forced-colors: active) {
   /* Let the platform palette win; never mix theme colours into system colors. */
   html[data-high-contrast="true"] {

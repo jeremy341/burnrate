@@ -344,18 +344,41 @@ fn synthetic_rate(ov: &Overrides) -> Option<ModelRate> {
     Some(ModelRate { speeds: SpeedRates { base, fast: None, ultrafast: None }, tiers: Vec::new() })
 }
 
+/// A resolved rate: borrowed from the table when no override applies, owned when an override is
+/// layered on top. The alias/model of a row is constant, so callers can resolve once and reuse it
+/// for both `price` and `cache_savings` instead of paying the lookup and allocation twice.
+pub enum EffectiveRate<'a> {
+    Borrowed(&'a ModelRate),
+    Owned(ModelRate),
+}
+
+impl EffectiveRate<'_> {
+    pub fn get(&self) -> &ModelRate {
+        match self {
+            EffectiveRate::Borrowed(rate) => rate,
+            EffectiveRate::Owned(rate) => rate,
+        }
+    }
+
+    pub fn price(&self, r: &Record) -> Priced {
+        price_with_rate(self.get(), r)
+    }
+
+    pub fn cache_savings(&self, r: &Record) -> f64 {
+        cache_savings_with_rate(self.get(), r)
+    }
+}
+
 /// Resolve the effective rate for a record: the override is layered on the published rate when one
-/// exists, or stands alone otherwise. The scratch slot owns the layered copy.
-fn effective_rate<'a>(table: &'a RateTable, r: &Record, overrides: Option<&OverrideTable>, scratch: &'a mut Option<ModelRate>) -> Option<&'a ModelRate> {
+/// exists, or stands alone otherwise.
+pub fn resolve_rate<'a>(table: &'a RateTable, r: &Record, overrides: Option<&OverrideTable>) -> Option<EffectiveRate<'a>> {
     let Some(ov) = overrides.and_then(|o| o.get(&r.model)) else {
-        return record_rate(table, r);
+        return record_rate(table, r).map(EffectiveRate::Borrowed);
     };
-    *scratch = Some(match record_rate(table, r) {
+    Some(EffectiveRate::Owned(match record_rate(table, r) {
         Some(base) => overridden_rate(base, ov),
         None => synthetic_rate(ov)?,
-    });
-    let scratch: &'a Option<ModelRate> = scratch;
-    scratch.as_ref()
+    }))
 }
 
 fn prompt_tokens(r: &Record) -> f64 {
@@ -380,7 +403,9 @@ fn rates_at(rate: &ModelRate, speed: u8, r: &Record) -> TokenRates {
 const UNPRICEABLE: [&str; 6] = ["<synthetic>", "synthetic", "opus", "sonnet", "haiku", "fable"];
 
 pub fn lookup<'a>(table: &'a RateTable, model: &str) -> Option<&'a ModelRate> {
-    let key = strip_variant(&normalize_key(model)).to_string();
+    // One allocation: trim at the variant marker, then lowercase what is left. Lowercasing before
+    // stripping (the old path) produced the same key but needed two Strings.
+    let key = strip_variant(model.trim()).to_lowercase();
     let bare = bare_name(&key);
     if bare.is_empty() || UNPRICEABLE.contains(&bare) {
         return None;
@@ -428,19 +453,22 @@ fn sum(c: &Category) -> f64 {
     c.input + c.cache_read + c.cache_write + c.output
 }
 
-/// Reasoning tokens are already included in `output`; they are not charged twice.
-pub fn price(table: &RateTable, r: &Record, overrides: Option<&OverrideTable>) -> Priced {
+fn unsplit(cost: f64, source: CostSource) -> Priced {
+    Priced { cost, source, category: None, speed_premium: 0.0 }
+}
+
+/// Price a record for which no rate could be resolved. Reported cost is still authoritative.
+pub fn price_unrated(r: &Record) -> Priced {
+    match r.reported.filter(|c| c.is_finite()) {
+        None => unsplit(0.0, CostSource::Unpriced),
+        Some(c) => unsplit(c, CostSource::ProviderReported),
+    }
+}
+
+fn price_with_rate(rate: &ModelRate, r: &Record) -> Priced {
     // Reported cost is authoritative whenever the provider supplied it, including for records that
     // also match a price override; the rates (published or overridden) only split it by category.
     let reported = r.reported.filter(|c| c.is_finite());
-    let unsplit = |cost: f64, source: CostSource| Priced { cost, source, category: None, speed_premium: 0.0 };
-    let mut scratch = None;
-    let Some(rate) = effective_rate(table, r, overrides, &mut scratch) else {
-        return match reported {
-            None => unsplit(0.0, CostSource::Unpriced),
-            Some(c) => unsplit(c, CostSource::ProviderReported),
-        };
-    };
     let list = cost_by_category(r, &rates_at(rate, r.speed, r));
     let list_cost = sum(&list);
     if let Some(c) = reported {
@@ -463,14 +491,23 @@ pub fn price(table: &RateTable, r: &Record, overrides: Option<&OverrideTable>) -
     }
 }
 
+fn cache_savings_with_rate(rate: &ModelRate, r: &Record) -> f64 {
+    let rates = rates_at(rate, r.speed, r);
+    r.cached * (rates.input - rates.cache_read)
+}
+
+/// Reasoning tokens are already included in `output`; they are not charged twice.
+pub fn price(table: &RateTable, r: &Record, overrides: Option<&OverrideTable>) -> Priced {
+    match resolve_rate(table, r, overrides) {
+        None => price_unrated(r),
+        Some(rate) => rate.price(r),
+    }
+}
+
 pub fn cache_savings(table: &RateTable, r: &Record, overrides: Option<&OverrideTable>) -> f64 {
-    let mut scratch = None;
-    match effective_rate(table, r, overrides, &mut scratch) {
+    match resolve_rate(table, r, overrides) {
         None => 0.0,
-        Some(rate) => {
-            let rates = rates_at(rate, r.speed, r);
-            r.cached * (rates.input - rates.cache_read)
-        }
+        Some(rate) => rate.cache_savings(r),
     }
 }
 

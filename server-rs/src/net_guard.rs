@@ -214,7 +214,7 @@ pub fn redact(text: &str) -> String {
 pub fn redact_with(text: &str, secrets: &[String]) -> String {
     let mut out = text.to_string();
     let mut values: Vec<&str> = secrets.iter().map(String::as_str).filter(|v| !v.is_empty()).collect();
-    values.sort_by(|a, b| b.len().cmp(&a.len()));
+    values.sort_by_key(|v| std::cmp::Reverse(v.len()));
     for value in values {
         out = out.replace(value, "[redacted]");
     }

@@ -39,9 +39,8 @@ fn data_roots_from(configured: &[PathBuf], candidates: &[PathBuf]) -> Vec<PathBu
     for dir in configured.iter().filter(|d| d.is_dir()) {
         push_unique(&mut out, dir.clone());
     }
-    match candidates.iter().find(|dir| has_data(dir)).or_else(|| candidates.iter().find(|dir| dir.exists())) {
-        Some(found) => push_unique(&mut out, found.clone()),
-        None => {}
+    if let Some(found) = candidates.iter().find(|dir| has_data(dir)).or_else(|| candidates.iter().find(|dir| dir.exists())) {
+        push_unique(&mut out, found.clone());
     }
     out
 }
@@ -198,14 +197,31 @@ impl Source for OpenCode {
             }
             filters.push("typeof(data) = 'text' AND json_valid(data)");
             // Project only the needed fields in SQLite: message bodies can be very large.
-            let sql = format!(
+            let prefix = format!(
                 "SELECT id, session_id, {} AS created, json_object('tokens', data -> '$.tokens', 'cost', data -> '$.cost', 'model', data -> '$.model', \
                  'modelID', data -> '$.modelID', 'providerID', data -> '$.providerID', 'time', data -> '$.time', 'id', data -> '$.id', 'sessionID', data -> '$.sessionID') AS data \
-                 FROM {table} WHERE {}",
+                 FROM {table} WHERE ",
                 if has_time { "time_created" } else { "NULL" },
-                filters.join(" AND ")
             );
-            let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
+            let plain_sql = format!("{prefix}{}", filters.join(" AND "));
+            // OpenCode 1's `message` table stores the timestamp inside the JSON (`$.time.created`,
+            // epoch ms) and has no `time_created` column. Filter it in SQL so old messages are never
+            // parsed. A missing or unexpected time stays in the set for the Rust cutoff to decide.
+            let json_time = "(json_extract(data, '$.time.created') >= ?1 OR json_extract(data, '$.time.created') IS NULL)";
+            let filtered_sql = format!("{plain_sql} AND {json_time}");
+            // If JSON functions are unavailable or the schema differs, fall back to the unfiltered
+            // query instead of failing the whole read; the Rust check below is authoritative.
+            let (mut stmt, has_time_param) = if has_time {
+                (
+                    db.prepare(&plain_sql).map_err(|e| e.to_string())?,
+                    true,
+                )
+            } else {
+                match db.prepare(&filtered_sql) {
+                    Ok(s) => (s, true),
+                    Err(_) => (db.prepare(&plain_sql).map_err(|e| e.to_string())?, false),
+                }
+            };
             let map_row =
                 |r: &rusqlite::Row| -> rusqlite::Result<(String, String, Option<f64>, String)> {
                     let text = |i: usize| -> String {
@@ -224,7 +240,7 @@ impl Source for OpenCode {
                         text(3),
                     ))
                 };
-            let rows = if has_time {
+            let rows = if has_time_param {
                 stmt.query_map([since_ms], map_row)
             } else {
                 stmt.query_map([], map_row)
@@ -267,6 +283,42 @@ mod tests {
         );
         assert_eq!(data_roots_from(&[with_data.clone()], &candidates), vec![with_data.clone()]);
         assert_eq!(data_roots_from(&[], &[root.join("nothing")]), Vec::<PathBuf>::new());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn message_table_sql_cutoff_keeps_the_same_records() {
+        let root = std::env::temp_dir().join(format!("burnrate-opencode-msg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let db = root.join("opencode.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);")
+            .unwrap();
+        let since = crate::types::parse_rfc3339_ms("2026-11-20T10:00:00Z").unwrap();
+        let insert = |id: &str, ms: f64| {
+            let data = serde_json::json!({
+                "role": "assistant",
+                "model": {"id": "gpt-5"},
+                "time": {"created": ms},
+                "tokens": {"input": 100, "output": 50},
+            })
+            .to_string();
+            conn.execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, "s1", data],
+            )
+            .unwrap();
+        };
+        insert("old", since - 1000.0);
+        insert("new", since + 1000.0);
+        drop(conn);
+
+        let result = OpenCode.read(&db, since).unwrap();
+        assert_eq!(result.records.len(), 1);
+        assert_eq!(result.records[0].session, "s1");
+        assert_eq!(result.records[0].model, "gpt-5");
+        assert_eq!(result.records[0].key.as_deref(), Some("opencode:new"));
         fs::remove_dir_all(&root).unwrap();
     }
 }

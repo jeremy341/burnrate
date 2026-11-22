@@ -81,10 +81,6 @@ pub fn set(provider: &str, id: &str, name: &str) -> bool {
     })
 }
 
-pub fn get(provider: &str, id: &str) -> Option<String> {
-    with_names(|names| names.get(&key(provider, id)).cloned())
-}
-
 /// Put the user's names on a list of account objects (`id` plus `driver`, as limits report them, or
 /// `provider` for the provider list). The discovered label is kept as `discoveredLabel`.
 pub fn apply(accounts: &mut [Value], provider_hint: Option<&str>) {

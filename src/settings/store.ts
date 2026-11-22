@@ -11,7 +11,7 @@
  * Startup loading and the stream are started automatically in the browser; call
  * `startSettingsSync`/`stopSettingsSync` explicitly in tests or non-DOM hosts.
  */
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
 import { fetchSettings, sendSettingsPatch } from "~/api/settings";
 import { toast } from "~/lib/toast";
@@ -70,7 +70,21 @@ export function getSettings(): AppSettings {
 }
 
 export function useSettings<T = AppSettings>(selector: (settings: AppSettings) => T = (s) => s as T): T {
-  return selector(useSyncExternalStore(subscribe, getSettings, getSettings));
+  // Cache the selected value, including derived objects, so unrelated snapshots do not render
+  // subscribers and getSnapshot remains stable even when a selector allocates an object.
+  const getSelection = useMemo(() => {
+    let snapshot: AppSettings | undefined;
+    let selection: T;
+    return () => {
+      const next = getSettings();
+      if (snapshot === next) return selection;
+      const selected = selector(next);
+      if (snapshot === undefined || !selectionEqual(selection, selected)) selection = selected;
+      snapshot = next;
+      return selection;
+    };
+  }, [selector]);
+  return useSyncExternalStore(subscribe, getSelection, getSelection);
 }
 
 function notify(): void {
@@ -157,6 +171,24 @@ function settingsEqual(a: unknown, b: unknown): boolean {
     return keys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && settingsEqual(a[key], (b as Record<string, unknown>)[key]));
   }
   return false;
+}
+
+/** Selectors may return non-JSON values such as a Set; only structurally compare JSON objects. */
+function selectionEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+      a.every((value, index) => selectionEqual(value, b[index]));
+  }
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  const aPrototype = Object.getPrototypeOf(a);
+  const bPrototype = Object.getPrototypeOf(b);
+  if ((aPrototype !== Object.prototype && aPrototype !== null) || aPrototype !== bPrototype) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && selectionEqual(left[key], right[key]));
 }
 
 /** Fill defaults and fold the legacy top-level mirrors into `usage.*`. */

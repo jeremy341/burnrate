@@ -1,5 +1,5 @@
 import { GaugeIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLimits, useProviders } from "~/api";
 import {
@@ -22,17 +22,25 @@ import {
 } from "~/components/ui/app-nav";
 import { APP_CONTENT_ATTRIBUTE, AppMain, AppShell } from "~/components/ui/app-shell";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { TooltipProvider } from "~/components/ui/tooltip";
 import { UsagePage } from "~/components/usage/UsagePage";
 import { WorkspacePageContainer } from "~/components/WorkspacePageContainer";
 import { useGT } from "~/i18n";
 import { OPEN_ONBOARDING_EVENT, OPEN_SETTINGS_EVENT } from "~/onboarding";
 import { onPaletteAction } from "~/palette";
 import { useSettings } from "~/settings/store";
-import { useLimitsPolling, useMinuteNow } from "~/state/usage";
+import { useLimitsPolling } from "~/state/usage";
 import { VIEWS, viewHasRefresh } from "~/views/registry";
 import type { ViewDef, ViewProps } from "~/views/types";
 
 const VIEW_IDS: readonly string[] = [HOME_VIEW, ...VIEWS.map((view) => view.id)];
+const RetainedUsagePage = memo(UsagePage, (previous, next) =>
+  previous.active === next.active && (!next.active || (
+    previous.limits === next.limits && previous.limitsLoading === next.limitsLoading &&
+    previous.limitsError === next.limitsError && previous.onRefreshLimits === next.onRefreshLimits &&
+    previous.onClose === next.onClose
+  )),
+);
 
 function isMacPlatform(): boolean {
   if (typeof navigator === "undefined") return false;
@@ -81,7 +89,7 @@ function useScreenAnnouncement(view: string, title: string): string {
   return announcement;
 }
 
-function SecondaryScreen({
+const SecondaryScreen = memo(function SecondaryScreen({
   def,
   active,
   props,
@@ -109,7 +117,10 @@ function SecondaryScreen({
       )}
     </div>
   );
-}
+}, (previous, next) =>
+  previous.def === next.def && previous.active === next.active &&
+  (!next.active || previous.props === next.props),
+);
 
 export function App() {
   const gt = useGT();
@@ -127,9 +138,6 @@ export function App() {
     pollWhenHidden,
     active: view === HOME_VIEW,
   });
-
-  // Countdown ticker: minute-aligned, paused while hidden, started only while Limits can be seen.
-  const limitsNow = useMinuteNow(view === HOME_VIEW);
 
   // Refresh (throttled to five minutes) when returning to the view that hosts Limits.
   const previousViewRef = useRef(view);
@@ -256,14 +264,12 @@ export function App() {
     [view, screens, navigate, homeClose],
   );
 
-  const viewProps: ViewProps = {
-    providers,
-    limits,
-    close: () => navigate(HOME_VIEW),
-  };
+  const closeSecondary = useCallback(() => navigate(HOME_VIEW), [navigate]);
+  const viewProps = useMemo<ViewProps>(() => ({ providers, limits, close: closeSecondary }),
+    [providers, limits, closeSecondary]);
 
   return (
-    <AppNavProvider value={nav}>
+    <TooltipProvider><AppNavProvider value={nav}>
       <UsageHeaderSlotsProvider slots={usageHeaderSlots}>
         <AppShell label={activeTitle}>
           {/* One T3 bar for every screen. On Usage the page portals its filters, metric toggle and refresh
@@ -305,10 +311,9 @@ export function App() {
             {...{ [APP_CONTENT_ATTRIBUTE]: "" }}
             tabIndex={-1}
           >
-            <UsagePage
+            <RetainedUsagePage
               active={view === HOME_VIEW}
               limits={limits.data}
-              limitsNow={limitsNow}
               limitsLoading={limits.loading}
               limitsError={limits.error}
               onRefreshLimits={refreshLimits}
@@ -327,6 +332,6 @@ export function App() {
           </AppMain>
         </AppShell>
       </UsageHeaderSlotsProvider>
-    </AppNavProvider>
+    </AppNavProvider></TooltipProvider>
   );
 }

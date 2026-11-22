@@ -105,17 +105,23 @@ fn provider_info(state: &State) -> Value {
     routes::provider_list(state)
 }
 
-/// Reads every provider's limits at once: each is a network call.
+/// At most this many providers are probed in parallel. One report never spawns a thread per
+/// provider; each definition still enforces its own single in-flight request below this layer.
+const PROBE_CHUNK: usize = 4;
+
+/// Reads every provider's limits in small scoped chunks: each is a network call.
 fn limits_report(state: &State) -> Value {
-    let results: Vec<Vec<Value>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = state.providers.iter().map(|p| scope.spawn(|| p.read(&state.keys))).collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
-    });
     let mut accounts: Vec<Value> = Vec::new();
-    let mut notices: Vec<String> = Vec::new();
-    for batch in results {
-        accounts.extend(batch);
+    for chunk in state.providers.chunks(PROBE_CHUNK) {
+        let batch: Vec<Vec<Value>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk.iter().map(|p| scope.spawn(|| p.read(&state.keys))).collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+        });
+        for rows in batch {
+            accounts.extend(rows);
+        }
     }
+    let mut notices: Vec<String> = Vec::new();
     accounts.extend(budgets::accounts(state));
     nicknames::apply(&mut accounts, None);
     for a in &accounts {
@@ -161,7 +167,12 @@ fn handle_api(state: &State, request: &mut Request, path: &str) -> Response<std:
         (Method::Get, "/api/limits") => {
             // A client asking for limits counts as an active consumer for the background scheduler.
             scheduler::note_limits_request();
-            return json_response(200, &limits_report(state));
+            // Serve the full LimitsReport from the scheduler's shared cache. An explicit Refresh
+            // asks for `?force=1` (or the header) to bypass it and run a real probe.
+            let q = query(&url);
+            let force = q.get("force").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                || request.headers().iter().any(|h| h.field.equiv("X-Burnrate-Force") && h.value.as_str().trim() == "1");
+            return json_response(200, &scheduler::limits_report_cached(force, state));
         }
         // Scan progress only (files done / total per provider); cheap enough to poll while the UI shows a scanning line.
         (Method::Get, "/api/usage/progress") => return json_response(200, &state.engine.progress()),
@@ -465,7 +476,7 @@ pub fn init_env() {
 
 /// Cap concurrent connections so a local client cannot exhaust threads/memory by opening many
 /// sockets. Long-lived SSE streams hold a slot too, which also bounds their aggregate cost.
-const MAX_CONNECTIONS: usize = 256;
+const MAX_CONNECTIONS: usize = 16;
 static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
 struct ConnectionGuard;
@@ -509,9 +520,9 @@ pub fn run() {
     };
     println!("Burnrate listening on http://127.0.0.1:{port}");
     scheduler::start(state.clone());
-    // Read the transcripts in the background so the first Cost view finds data (or honest progress) waiting.
-    // Nothing waits for it, and no limits probe is made here: that stays on demand.
-    state.engine.start_scan();
+    // No probe or transcript scan runs at startup: the default screen is Limits, scans are kicked
+    // by `/api/usage`, and `/api/limits` probes on demand. `/api/usage/progress` reports the
+    // engine's real state (idle until a request kicks a scan), never a lying "scanning".
     for mut request in server.incoming_requests() {
         if !acquire_connection_slot() {
             let _ = request.respond(Response::from_data(Vec::new()).with_status_code(StatusCode(503)));

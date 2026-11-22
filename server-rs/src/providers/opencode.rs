@@ -26,21 +26,10 @@ fn auth_file_keys(path: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-fn stored_key(integration: &str) -> Option<String> {
-    let path = db_path();
-    if !path.exists() {
-        return None;
-    }
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    let _ = db.busy_timeout(std::time::Duration::from_millis(100));
-    let value: String = db
-        .query_row(
-            "SELECT value FROM credential WHERE integration_id = ?1 AND active IS NOT 0 ORDER BY active DESC, time_created DESC, id DESC LIMIT 1",
-            [integration],
-            |r| r.get(0),
-        )
-        .ok()?;
-    let stored: Value = serde_json::from_str(&value).ok()?;
+/// Validate one credential row the way OpenCode itself does. Only the newest active row per
+/// integration is considered (see `stored_keys`); a rejected row is not retried with an older one.
+fn parse_stored_value(value: &str) -> Option<String> {
+    let stored: Value = serde_json::from_str(value).ok()?;
     if stored.get("type").and_then(Value::as_str) != Some("key") {
         return None;
     }
@@ -50,6 +39,54 @@ fn stored_key(integration: &str) -> Option<String> {
         }
     }
     stored.get("key").and_then(Value::as_str).map(str::trim).filter(|k| !k.is_empty()).map(str::to_string)
+}
+
+/// The Go key and the shared Zen key OpenCode's database holds, in that precedence order. The
+/// database is opened once for both, rather than once per integration.
+fn stored_keys() -> (Option<String>, Option<String>) {
+    stored_keys_in(&db_path())
+}
+
+fn stored_keys_in(path: &std::path::Path) -> (Option<String>, Option<String>) {
+    if !path.exists() {
+        return (None, None);
+    }
+    let Ok(db) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return (None, None);
+    };
+    let _ = db.busy_timeout(std::time::Duration::from_millis(100));
+    let sql = "SELECT integration_id, value FROM credential \
+               WHERE integration_id IN ('opencode-go', 'opencode') AND active IS NOT 0 \
+               ORDER BY active DESC, time_created DESC, id DESC";
+    let Ok(mut stmt) = db.prepare(sql) else {
+        return (None, None);
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1).ok().flatten()))
+    });
+    let Ok(rows) = rows else {
+        return (None, None);
+    };
+    let mut go = None;
+    let mut zen = None;
+    let mut go_seen = false;
+    let mut zen_seen = false;
+    for row in rows.flatten() {
+        let (integration, value) = row;
+        let (slot, seen) = if integration == "opencode-go" {
+            (&mut go, &mut go_seen)
+        } else {
+            (&mut zen, &mut zen_seen)
+        };
+        if *seen {
+            continue;
+        }
+        *seen = true;
+        // A missing or unreadable value on the newest row is a miss, not a reason to fall back to
+        // an older row (the original `query_row` returned no key in that case).
+        *slot = value.as_deref().and_then(parse_stored_value);
+    }
+    (go, zen)
 }
 
 /// A Zen key can exist without a Go subscription: omitted windows must be skipped, not shown as
@@ -63,8 +100,9 @@ fn window(id: &str, kind: &'static str, label: &str, w: &Value, mins: Option<f64
 
 /// OpenCode itself holds a Go/Zen key (opencode.db, auth.json or `OPENCODE_API_KEY`).
 pub fn go_key_present() -> bool {
-    stored_key("opencode-go").is_some()
-        || stored_key("opencode").is_some()
+    let (go, zen) = stored_keys();
+    go.is_some()
+        || zen.is_some()
         || !auth_file_keys(&auth_path()).is_empty()
         || std::env::var("OPENCODE_API_KEY").is_ok_and(|k| !k.trim().is_empty())
 }
@@ -107,7 +145,8 @@ impl Provider for OpenCode {
         Self::read_local_go(
             keys,
             || {
-                [stored_key("opencode-go"), stored_key("opencode")]
+                let (go, zen) = stored_keys();
+                [go, zen]
                     .into_iter()
                     .chain(auth_file_keys(&auth_path()).into_iter().map(Some))
                     .chain([std::env::var("OPENCODE_API_KEY").ok().map(|k| k.trim().to_string())])
@@ -271,6 +310,44 @@ mod tests {
         assert!(!read_credentials.get(), "the definition already covers this subscription");
         assert!(accounts.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stored_keys_take_one_valid_row_per_integration_in_go_first_order() {
+        let dir = go_test_dir("stored");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("opencode.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE credential (id INTEGER PRIMARY KEY, integration_id TEXT, value TEXT, active INTEGER, time_created INTEGER);",
+        )
+        .unwrap();
+        let add = |id: i64, integration: &str, key: &str, server: &str, active: i64, created: i64| {
+            let stored = if server.is_empty() {
+                json!({"type": "key", "key": key}).to_string()
+            } else {
+                json!({"type": "key", "key": key, "metadata": {"server": server}}).to_string()
+            };
+            conn.execute(
+                "INSERT INTO credential VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, integration, stored, active, created],
+            )
+            .unwrap();
+        };
+        add(1, "opencode-go", "go-old", "", 1, 10);
+        add(2, "opencode-go", "go-new", "", 1, 20);
+        add(3, "opencode-go", "go-inactive", "", 0, 30);
+        // Newest Zen row is rejected (wrong server), so no older row is retried.
+        add(4, "opencode", "zen-wrong", "https://elsewhere.example", 1, 40);
+        add(5, "opencode", "zen-old", "", 1, 30);
+        drop(conn);
+
+        assert_eq!(
+            stored_keys_in(&db),
+            (Some("go-new".into()), None),
+            "one key per integration, Go first, newest active row only"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

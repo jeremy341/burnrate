@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { flushSync } from "react-dom";
 
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -32,8 +31,7 @@ export function RedactedSensitiveText(props: {
   readonly hideTooltip: string;
   readonly className?: string;
 }) {
-  const [visibility, setVisibility] = useState<"hidden" | "hiding" | "revealed">("hidden");
-  const revealed = visibility === "revealed";
+  const [revealed, setRevealed] = useState(false);
   const value = props.value?.trim();
   const redacted = value ? redactedPlaceholder(value) : "";
 
@@ -46,29 +44,14 @@ export function RedactedSensitiveText(props: {
           <button
             type="button"
             className={cn(
-              "min-w-0 cursor-pointer rounded-sm font-mono text-2xs leading-normal transition hover:text-foreground",
+              "min-w-0 cursor-pointer rounded-sm font-mono text-2xs leading-normal hover:text-foreground",
               revealed ? "text-muted-foreground" : "select-none text-muted-foreground blur-xs",
               props.className,
             )}
-            onClick={(event) => {
-              if (!revealed) return setVisibility("revealed");
-              const button = event.currentTarget;
-              flushSync(() => setVisibility("hiding"));
-              const finishHiding = () =>
-                setVisibility((current) => (current === "hiding" ? "hidden" : current));
-              const blur = button
-                .getAnimations()
-                .find(
-                  (animation) =>
-                    animation instanceof CSSTransition && animation.transitionProperty === "filter",
-                );
-              // Theme changes suppress the transition; a reversed one settles once revealed.
-              if (blur) void blur.finished.then(finishHiding, finishHiding);
-              else finishHiding();
-            }}
+            onClick={() => setRevealed((current) => !current)}
             aria-label={props.ariaLabel}
           >
-            {visibility === "hidden" ? redacted : value}
+            {revealed ? value : redacted}
           </button>
         }
       />

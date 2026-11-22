@@ -36,7 +36,7 @@ export function BudgetEditor() {
   const [status, setStatus] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  // `useGT()` returns a fresh function each render, so the one-shot load must not depend on it.
+  // Load once when the editor opens.
   useEffect(() => {
     setLoading(true);
     listBudgets().then(

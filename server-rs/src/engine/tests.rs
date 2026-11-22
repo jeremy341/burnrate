@@ -214,6 +214,39 @@ fn partial_results_are_served_while_scanning() {
 }
 
 #[test]
+fn batch_publish_keeps_session_counts_honest_and_exact_at_settle() {
+    let dir = temp_dir();
+    let (e, _) = engine(&dir);
+    let now = now_ms();
+    for i in 0..40 {
+        write_file(&dir, &format!("f{i:02}.jsonl"), &[line("shared", "m", now - 1_000.0, 1.0), line(&format!("s{i}"), "m", now - 1_000.0, 1.0)]);
+    }
+    let mut intermediate: Vec<usize> = Vec::new();
+    run_sync(&e, &mut || {
+        intermediate.push(e.shared.lock().views[0].distinct_sessions);
+    });
+    assert!(intermediate.windows(2).all(|w| w[0] <= w[1]), "running session counts only grow: {intermediate:?}");
+    assert_eq!(intermediate.first().copied(), Some(FIRST_BATCH + 1), "the first batch contributes the shared session plus its own");
+    let inner = e.shared.lock();
+    assert_eq!(inner.views[0].distinct_sessions, 41);
+    assert_eq!(inner.views[0].session_ids.len(), 41);
+    drop(inner);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_scan_that_changed_nothing_does_not_bump_generation() {
+    let dir = temp_dir();
+    let (e, _) = engine(&dir);
+    write_file(&dir, "a.jsonl", &[line("s", "m", now_ms(), 1.0)]);
+    run_sync(&e, &mut || {});
+    let generation = e.shared.generation.load(Ordering::Acquire);
+    run_sync(&e, &mut || {});
+    assert_eq!(e.shared.generation.load(Ordering::Acquire), generation, "a warm scan must not invalidate memoised summaries");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn newest_files_are_parsed_first() {
     let dir = temp_dir();
     let (e, reads) = engine(&dir);
@@ -357,8 +390,8 @@ fn rows_sit_in_the_requested_time_zone_day() {
         let rec = Record { uncached: 9.0, ..Record::new("test", ts, "m", "s") };
         let rows = Arc::new(store::pack(&[rec], &mut inner.strings));
         inner.cache.insert(format!("test{SEP}x"), FileEntry { size: 1.0, mtime_ms: 1.0, malformed: 0, rows });
-        inner.views[0].keys = vec![format!("test{SEP}x")];
-        scan::publish(&mut inner, 0, "test", false, true);
+        inner.views[0].keys = vec![Arc::from(format!("test{SEP}x").as_str())];
+        scan::publish(&mut inner, 0, "test", false);
         e.shared.generation.store(inner.generation, Ordering::Release);
     }
     e.shared.progress_lock().completed_once = true;

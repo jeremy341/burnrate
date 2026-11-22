@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type {
   LimitsReport,
@@ -26,7 +26,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ patch }),
     }),
-  limits: () => request<LimitsReport>("/api/limits"),
+  limits: (force = false) => request<LimitsReport>(force ? "/api/limits?force=1" : "/api/limits"),
   providers: () => request<ProviderInfo[]>("/api/providers"),
   saveKey: (providerId: string, name: string, apiKey: string) =>
     request(`/api/providers/${encodeURIComponent(providerId)}/keys`, {
@@ -71,15 +71,18 @@ export interface Loaded<T> {
   readonly reload: () => void;
 }
 
-function useLoad<T>(load: () => Promise<T>, onData?: (data: T) => void): Loaded<T> {
+function useLoad<T>(load: (force?: boolean) => Promise<T>, onData?: (data: T) => void): Omit<Loaded<T>, "reload"> & {
+  readonly reload: () => Promise<void>;
+  readonly forceReload: () => Promise<void>;
+} {
   const [state, setState] = useState<{ data: T | null; error: string | null; loading: boolean }>({
     data: null,
     error: null,
     loading: true,
   });
-  const reload = useCallback(() => {
+  const run = useCallback((force: boolean) => {
     setState((s) => ({ ...s, loading: true }));
-    load().then(
+    return load(force).then(
       (data) => {
         onData?.(data);
         setState({ data, error: null, loading: false });
@@ -89,8 +92,10 @@ function useLoad<T>(load: () => Promise<T>, onData?: (data: T) => void): Loaded<
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useEffect(reload, [reload]);
-  return { ...state, reload };
+  const reload = useCallback(() => run(false), [run]);
+  const forceReload = useCallback(() => run(true), [run]);
+  useEffect(() => { void reload(); }, [reload]);
+  return useMemo(() => ({ ...state, reload, forceReload }), [state, reload, forceReload]);
 }
 
 export const useLimits = () => useLoad(api.limits);

@@ -208,15 +208,6 @@ function parseStoredTheme(value: unknown): ThemeDefinition | null {
   };
 }
 
-function parseStoredThemes(storedThemes: ReadonlyArray<unknown>): ReadonlyArray<ThemeDefinition> {
-  const themes: ThemeDefinition[] = [];
-  for (const value of storedThemes) {
-    const theme = parseStoredTheme(value);
-    if (theme && !themes.some((existing) => existing.id === theme.id)) themes.push(theme);
-  }
-  return themes;
-}
-
 // ---------------------------------------------------------------------------
 // Custom theme library (settings store backed)
 // ---------------------------------------------------------------------------

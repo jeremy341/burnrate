@@ -2,7 +2,10 @@
 use super::{env_path, home, lines, walk, FileInfo, Source};
 use crate::types::{parse_ts_ms, str_of, token_count, ReadResult, Record};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------- Grok
 
@@ -512,19 +515,72 @@ impl Source for Muse {
 
 // ---------------------------------------------------------------- Local log stats
 
+/// One cached recursive listing. The fingerprint is the root folder's own (mtime, length): adding
+/// or removing a file directly in it invalidates the entry immediately. The short TTL also catches
+/// changes in subfolders, which do not move the root's own timestamp.
+struct Listing {
+    at: Instant,
+    fingerprint: (u128, u64),
+    files: Vec<FileInfo>,
+}
+
+static LISTINGS: OnceLock<Mutex<HashMap<(PathBuf, &'static str), Listing>>> = OnceLock::new();
+const LISTING_TTL: Duration = Duration::from_millis(750);
+
+fn root_fingerprint(root: &Path) -> (u128, u64) {
+    match std::fs::metadata(root) {
+        Ok(meta) => (
+            meta.modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos()),
+            meta.len(),
+        ),
+        Err(_) => (0, 0),
+    }
+}
+
+/// `walk`, memoised per root so repeated `/api/providers` reads do not re-walk the tree. A missing
+/// root is never cached, so a folder created later is discovered on the very next call; an empty
+/// result is cached like any other, so "no logs yet" stays accurate within the TTL.
+fn walk_cached(root: &Path, accept: &dyn Fn(&str) -> bool, tag: &'static str) -> Vec<FileInfo> {
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let fingerprint = root_fingerprint(root);
+    let cache = LISTINGS.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    let Ok(mut guard) = cache.lock() else {
+        let mut files = Vec::new();
+        walk(root, accept, &mut files);
+        return files;
+    };
+    let key = (root.to_path_buf(), tag);
+    if let Some(entry) = guard.get(&key) {
+        if now.duration_since(entry.at) <= LISTING_TTL && entry.fingerprint == fingerprint {
+            return entry.files.clone();
+        }
+    }
+    let mut files = Vec::new();
+    walk(root, accept, &mut files);
+    guard.retain(|_, e| now.duration_since(e.at) <= LISTING_TTL);
+    guard.insert(key, Listing { at: now, fingerprint, files: files.clone() });
+    files
+}
+
 /// What Pi's and Muse's own files on this computer say, counted without inventing a number: the
 /// session logs found (one file is one session for both), the newest of them, and the folder that
 /// holds the newest log. `None` when unseen or the provider has no countable log.
 pub fn local_log_stats(id: &str) -> Option<crate::providers::LocalLogStats> {
     match id {
-        "pi" => local_log_stats_in(&|n| n.ends_with(".jsonl"), &pi_session_dirs()),
-        "muse" => local_log_stats_in(&|n| n == "session.jsonl", &muse_session_dirs()),
+        "pi" => local_log_stats_in(&|n| n.ends_with(".jsonl"), &pi_session_dirs(), "pi"),
+        "muse" => local_log_stats_in(&|n| n == "session.jsonl", &muse_session_dirs(), "muse"),
         _ => None,
     }
 }
 
-/// The counting part of `local_log_stats`, with the file test and candidate folders passed in.
-fn local_log_stats_in(accept: &dyn Fn(&str) -> bool, dirs: &[PathBuf]) -> Option<crate::providers::LocalLogStats> {
+/// The counting part of `local_log_stats`, with the file test, candidate folders and cache tag passed in.
+fn local_log_stats_in(accept: &dyn Fn(&str) -> bool, dirs: &[PathBuf], tag: &'static str) -> Option<crate::providers::LocalLogStats> {
     // The folder to open is the one holding the newest log, so an empty first candidate does not
     // point "Open data folder" at a folder with nothing in it. With no logs at all, the first
     // existing candidate is still an honest answer (the agent's folder is there, just unused).
@@ -532,8 +588,7 @@ fn local_log_stats_in(accept: &dyn Fn(&str) -> bool, dirs: &[PathBuf]) -> Option
     let mut sessions = 0usize;
     let mut last_used_ms: Option<f64> = None;
     for dir in dirs {
-        let mut files = Vec::new();
-        walk(dir, accept, &mut files);
+        let files = walk_cached(dir, accept, tag);
         sessions += files.len();
         if let Some(newest) = files.iter().map(|f| f.mtime_ms).reduce(f64::max) {
             if last_used_ms.is_none_or(|t| newest > t) {
@@ -606,18 +661,39 @@ mod tests {
         let missing = root.join("missing");
         // The folder shown is the one with the logs, not an earlier empty candidate.
         let stats =
-            local_log_stats_in(&|n| n.ends_with(".jsonl"), &[missing.clone(), empty.clone(), sessions.clone()]).unwrap();
+            local_log_stats_in(&|n| n.ends_with(".jsonl"), &[missing.clone(), empty.clone(), sessions.clone()], "pi").unwrap();
         assert_eq!(stats.sessions, 2);
         assert_eq!(stats.folder, sessions);
         assert!(stats.last_used_ms.is_some_and(|t| t > 0.0));
         // No logs anywhere: the first existing folder is still honest, with zero sessions.
-        let empty_stats = local_log_stats_in(&|n| n.ends_with(".jsonl"), &[missing.clone(), empty.clone()]).unwrap();
+        let empty_stats = local_log_stats_in(&|n| n.ends_with(".jsonl"), &[missing.clone(), empty.clone()], "pi").unwrap();
         assert_eq!(empty_stats.sessions, 0);
         assert_eq!(empty_stats.folder, empty);
         assert!(empty_stats.last_used_ms.is_none());
         // Nothing found: no stats, nothing invented. A provider without a countable log reports none.
-        assert!(local_log_stats_in(&|n| n.ends_with(".jsonl"), &[missing]).is_none());
+        assert!(local_log_stats_in(&|n| n.ends_with(".jsonl"), &[missing], "pi").is_none());
         assert!(local_log_stats("claude").is_none(), "no countable log outside Pi and Muse today");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn cached_listing_refreshes_on_change_and_discovers_a_new_folder() {
+        let root = temp_dir("cache");
+        let accept = |n: &str| n.ends_with(".jsonl");
+        assert!(walk_cached(&root, &accept, "pi").is_empty());
+        // Adding a file directly in the root moves its mtime, so the fingerprint invalidates and
+        // the new file is visible on the next call.
+        fs::write(root.join("a.jsonl"), "{}\n").unwrap();
+        // Windows directory mtimes are coarse, so the mtime fingerprint may not move for a file
+        // created in the same tick. The TTL is the cross-platform invalidation guarantee.
+        std::thread::sleep(LISTING_TTL + Duration::from_millis(50));
+        assert_eq!(walk_cached(&root, &accept, "pi").len(), 1);
+        // A missing folder is never cached: creating it later is discovered immediately.
+        let late = root.join("late");
+        assert!(walk_cached(&late, &accept, "pi").is_empty());
+        fs::create_dir_all(&late).unwrap();
+        fs::write(late.join("b.jsonl"), "{}\n").unwrap();
+        assert_eq!(walk_cached(&late, &accept, "pi").len(), 1);
         fs::remove_dir_all(&root).unwrap();
     }
 

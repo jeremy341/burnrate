@@ -185,7 +185,7 @@ pub static ANTIGRAVITY: CliSpec = CliSpec {
 
 /// Fixed Antigravity IDE locations, most likely first. The installer changed its folder name
 /// between releases, so every known variant is checked; nothing here comes from a request.
-fn antigravity_app_paths(local_programs: Option<PathBuf>, program_files: Option<PathBuf>, home: &Path) -> Vec<PathBuf> {
+fn antigravity_app_paths(local_programs: Option<PathBuf>, program_files: Option<PathBuf>, _home: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     #[cfg(windows)]
     {
@@ -201,9 +201,9 @@ fn antigravity_app_paths(local_programs: Option<PathBuf>, program_files: Option<
     #[cfg(not(windows))]
     {
         let _ = (&local_programs, &program_files);
-        out.push(home.join("Applications").join("Antigravity.app").join("Contents").join("MacOS").join("Antigravity"));
+        out.push(_home.join("Applications").join("Antigravity.app").join("Contents").join("MacOS").join("Antigravity"));
         out.push(PathBuf::from("/Applications/Antigravity.app/Contents/MacOS/Antigravity"));
-        out.push(home.join(".local").join("bin").join("antigravity"));
+        out.push(_home.join(".local").join("bin").join("antigravity"));
         out.push(PathBuf::from("/usr/local/bin/antigravity"));
         out.push(PathBuf::from("/usr/bin/antigravity"));
         out.push(PathBuf::from("/snap/bin/antigravity"));
@@ -262,6 +262,7 @@ pub fn login_info(provider_id: &str) -> Value {
 }
 
 /// Install page for a provider's CLI (sent with the `cli-not-found` error).
+#[cfg(test)]
 pub fn install_url(provider_id: &str) -> Option<&'static str> {
     spec_for(provider_id).map(|s| s.install_url)
 }
@@ -404,7 +405,7 @@ fn scan_url(text: &str, hosts: &[&str]) -> Option<String> {
             url = &url[..url.len() - 1];
         }
         let after = &url["https://".len()..];
-        let host_end = after.find(|c: char| matches!(c, '/' | '?' | '#' | ':')).unwrap_or(after.len());
+        let host_end = after.find(['/', '?', '#', ':']).unwrap_or(after.len());
         if host_allowed(&after[..host_end], hosts) {
             return Some(url.to_string());
         }
@@ -1278,7 +1279,7 @@ mod tests {
     };
 
     /// Writes a stand-in login CLI next to its `auth.json`; `body` is the script (cmd / sh).
-    fn fake_cli(dir: &Path, cmd_body: &str, sh_body: &str) -> PathBuf {
+    fn fake_cli(dir: &Path, cmd_body: &str, _sh_body: &str) -> PathBuf {
         #[cfg(windows)]
         {
             let script = dir.join("fake-login.cmd");
@@ -1289,7 +1290,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let script = dir.join("fake-login.sh");
-            std::fs::write(&script, format!("#!/bin/sh\n{sh_body}\n")).expect("script");
+            std::fs::write(&script, format!("#!/bin/sh\n{_sh_body}\n")).expect("script");
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
             script
         }
@@ -1425,7 +1426,7 @@ mod tests {
     fn a_finished_login_must_be_valid_and_newer_than_the_old_one() {
         let dir = temp_dir("baseline");
         let cred = dir.join("auth.json");
-        let mut flow_for = |baseline| Flow {
+        let flow_for = |baseline| Flow {
             spec: &CODEX,
             dir: dir.clone(),
             cred: cred.clone(),

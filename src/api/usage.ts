@@ -74,11 +74,6 @@ export async function fetchUsage(
   return response;
 }
 
-/** The progress endpoint on its own; cheap enough to poll when no usage figures are needed. */
-export function fetchScanProgress(signal?: AbortSignal): Promise<ScanProgress> {
-  return request<ScanProgress>("/api/usage/progress", { signal });
-}
-
 export type ScanView =
   | { readonly kind: "idle" }
   /** The first listing of files is still running: the total is not known yet. */
@@ -124,38 +119,56 @@ export function useUsageWindow(input: UsageSummaryInput, enabled = true): UsageW
   const [error, setError] = useState<{ path: string; message: string } | null>(null);
   const [nonce, setNonce] = useState(0);
   const inputRef = useRef(input);
+  const pendingRefresh = useRef<{ input: UsageSummaryInput; resolve: () => void } | null>(null);
   inputRef.current = input;
 
   const cached = cache.get(path) ?? null;
   const response = fetched !== null && fetched.path === path ? fetched.response : cached;
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      pendingRefresh.current?.resolve();
+      pendingRefresh.current = null;
+      return;
+    }
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const target = inputRef.current;
+    const pending = pendingRefresh.current;
+    pendingRefresh.current = null;
+    const target = pending?.input ?? inputRef.current;
+    const targetPath = usageQuery(target);
+    let inFlight = false;
+
+    const settleRefresh = () => pending?.resolve();
 
     const schedule = (ms: number) => {
       if (controller.signal.aborted) return;
-      timer = setTimeout(() => void load(), ms);
+      timer = setTimeout(() => {
+        timer = undefined;
+        void load();
+      }, ms);
     };
     const load = async () => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || inFlight) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         // Nothing polls while the window is hidden; the visibility handler resumes it.
         timer = undefined;
         return;
       }
+      inFlight = true;
       try {
         const next = await fetchUsage(target, controller.signal);
         if (controller.signal.aborted) return;
-        setFetched({ path, response: next });
+        setFetched({ path: targetPath, response: next });
         setError(null);
         if (next.scan?.state === "scanning") schedule(SCAN_POLL_MS);
       } catch (cause) {
         if (controller.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError")) return;
-        setError({ path, message: cause instanceof Error ? cause.message : "error" });
+        setError({ path: targetPath, message: cause instanceof Error ? cause.message : "error" });
         schedule(RETRY_MS);
+      } finally {
+        inFlight = false;
+        settleRefresh();
       }
     };
     const onVisible = () => {
@@ -166,19 +179,23 @@ export function useUsageWindow(input: UsageSummaryInput, enabled = true): UsageW
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       controller.abort();
+      settleRefresh();
       if (timer !== undefined) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [path, enabled, nonce]);
 
-  const refresh = useCallback(async (next?: UsageSummaryInput) => {
-    const target = next ?? inputRef.current;
-    try {
-      await fetchUsage(target);
-    } catch {
-      // The polling effect reports the failure.
-    }
-    setNonce((value) => value + 1);
+  useEffect(() => () => {
+    pendingRefresh.current?.resolve();
+    pendingRefresh.current = null;
+  }, []);
+
+  const refresh = useCallback((next?: UsageSummaryInput) => {
+    return new Promise<void>((resolve) => {
+      pendingRefresh.current?.resolve();
+      pendingRefresh.current = { input: next ?? inputRef.current, resolve };
+      setNonce((value) => value + 1);
+    });
   }, []);
 
   return {

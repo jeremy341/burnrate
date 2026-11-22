@@ -366,7 +366,6 @@ fn cli_version() -> &'static str {
 mod tests {
     use super::*;
     use crate::providers::statusline;
-    use std::sync::Mutex;
 
     use crate::providers::TEST_GLOBALS as ENV_GLOBAL;
 

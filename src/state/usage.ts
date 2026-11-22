@@ -316,45 +316,83 @@ export interface LimitsPolling {
  * hidden unless `pollWhenHidden` is enabled.
  */
 export function useLimitsPolling(
-  limits: Loaded<LimitsReport>,
+  limits: Omit<Loaded<LimitsReport>, "reload"> & {
+    readonly reload: () => Promise<void>;
+    readonly forceReload: () => Promise<void>;
+  },
   options: LimitsPollingOptions,
 ): LimitsPolling {
   const { refreshIntervalSec, refreshOnFocus, pollWhenHidden, active } = options;
   const intervalMs = effectiveRefreshIntervalSec(refreshIntervalSec) * 1000;
   const lastRefreshAtRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
+  const inFlightForcedRef = useRef(false);
+  const pendingForceRef = useRef(false);
+  const disposedRef = useRef(false);
+  const requestRef = useRef<(force: boolean) => void>(() => {});
+  const loadingRef = useRef(limits.loading);
+  loadingRef.current = limits.loading;
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
 
-  // `useLoad` flips `loading` to false when a request settles; that is our coalescing latch.
   useEffect(() => {
-    if (!limits.loading) inFlightRef.current = false;
-  }, [limits.loading]);
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+      pendingForceRef.current = false;
+    };
+  }, []);
 
-  const refresh = useCallback(() => {
-    if (inFlightRef.current) return;
+  const requestRefresh = useCallback((force: boolean) => {
+    if (inFlightRef.current || loadingRef.current) {
+      if (force && !inFlightForcedRef.current) pendingForceRef.current = true;
+      return;
+    }
     inFlightRef.current = true;
+    inFlightForcedRef.current = force;
     const at = Date.now();
     lastRefreshAtRef.current = at;
     setLastRefreshAt(at);
-    limits.reload();
-  }, [limits.reload]);
+    const request = force ? limits.forceReload() : limits.reload();
+    void request.finally(() => {
+      inFlightRef.current = false;
+      inFlightForcedRef.current = false;
+      if (disposedRef.current) return;
+      if (pendingForceRef.current) {
+        pendingForceRef.current = false;
+        // The promise can settle before React publishes loading=false.
+        loadingRef.current = false;
+        requestRef.current(true);
+      }
+    });
+  }, [limits.reload, limits.forceReload]);
+  requestRef.current = requestRefresh;
+
+  // A manual request arriving during a cached read must still trigger a real probe afterward.
+  useEffect(() => {
+    if (!limits.loading && !inFlightRef.current && pendingForceRef.current) {
+      pendingForceRef.current = false;
+      requestRefresh(true);
+    }
+  }, [limits.loading, requestRefresh]);
+
+  const refresh = useCallback(() => requestRefresh(true), [requestRefresh]);
 
   const autoRefresh = useCallback(() => {
     if (!shouldRefreshLimits(lastRefreshAtRef.current, Date.now())) return;
-    refresh();
-  }, [refresh]);
+    requestRefresh(false);
+  }, [requestRefresh]);
 
   // Interval polling while the host view is visible (or while explicitly allowed when hidden).
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => {
       if (document.hidden && !pollWhenHidden) return;
-      refresh();
+      requestRefresh(false);
     }, intervalMs);
     return () => clearInterval(id);
-  }, [active, intervalMs, pollWhenHidden, refresh]);
+  }, [active, intervalMs, pollWhenHidden, requestRefresh]);
 
   // Refresh-on-focus, throttled so repeated focus events cannot spam the server.
   useEffect(() => {

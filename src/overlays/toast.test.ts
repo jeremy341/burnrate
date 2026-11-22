@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { diffExitedToasts } from "./toast";
+import { diffExitedToasts, toastStack } from "./toast";
 import type { ToastItem, ToastType } from "~/lib/toast";
 
 let nextId = 0;
@@ -9,6 +9,11 @@ function toastItem(type: ToastType = "info"): ToastItem {
 }
 
 describe("diffExitedToasts", () => {
+  it("puts the most recently added toast at the visual front", () => {
+    const older = toastItem();
+    const newer = toastItem();
+    expect(toastStack([older, newer])).toEqual([newer, older]);
+  });
   it("reports nothing when the snapshot is unchanged", () => {
     const items = [toastItem(), toastItem()];
     expect(diffExitedToasts(items, items)).toEqual([]);

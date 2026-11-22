@@ -26,6 +26,7 @@ fn leak(s: String) -> &'static str {
 }
 
 impl DefProvider {
+    #[cfg(test)]
     pub fn new(def: Definition, fetcher: Arc<dyn Fetcher>) -> DefProvider {
         let poll_seconds = def.poll_seconds;
         Self::new_with_poll(def, fetcher, poll_seconds)

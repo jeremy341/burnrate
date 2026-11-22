@@ -25,9 +25,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: pnpm
       - name: Enable pnpm
         run: |
           corepack enable
@@ -55,7 +59,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: server-rs -> target
+          workspaces: |
+            server-rs -> target
+            cli -> target
+            src-tauri -> target
       - name: Linux WebView dependencies
         if: runner.os == 'Linux' && hashFiles('src-tauri/Cargo.toml') != ''
         run: |
@@ -95,13 +102,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: server-rs -> target
+          workspaces: |
+            server-rs -> target
+            cli -> target
+            src-tauri -> target
       - name: Enable pnpm
         run: |
           corepack enable
@@ -111,9 +125,15 @@ jobs:
       - name: Build web
         run: corepack pnpm build
       - name: Build server (release)
+        # PRs only gate the web bundle; skip the costly release LTO build there.
+        if: github.event_name != 'pull_request'
         run: cargo build --release --locked --manifest-path server-rs/Cargo.toml
-      - name: Size gate
-        if: hashFiles('scripts/perf-budget.mjs') != ''
+      - name: "Size gate (PR: web bundle only)"
+        # evaluateBudgets always applies the 520 KB JS / 60 KB CSS gates, with or without the server.
+        if: github.event_name == 'pull_request' && hashFiles('scripts/perf-budget.mjs') != ''
+        run: node scripts/perf-budget.mjs --skip-server
+      - name: Size gate (full)
+        if: github.event_name != 'pull_request' && hashFiles('scripts/perf-budget.mjs') != ''
         run: node scripts/perf-budget.mjs
       - name: Upload web bundle
         uses: actions/upload-artifact@v4

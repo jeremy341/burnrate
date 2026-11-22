@@ -33,9 +33,9 @@ fn normalize(value: &str) -> Option<String> {
 /// Last path component of a working directory, on both Windows and Linux.
 /// Handles `/`, `\\`, trailing separators and `.` / `..` segments.
 pub fn project_from_cwd(cwd: &str) -> Option<String> {
-    let trimmed = cwd.trim().trim_end_matches(|c| c == '/' || c == '\\');
+    let trimmed = cwd.trim().trim_end_matches(['/', '\\']);
     trimmed
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .find(|part| !part.is_empty() && *part != "." && *part != "..")
         .and_then(normalize)
 }

@@ -24,17 +24,6 @@ export interface DefinitionInfo {
   readonly toml?: string;
 }
 
-/** One row of `GET /api/defs/catalog` (built from models.dev by package 20). */
-export interface DefinitionCatalogEntry {
-  readonly id: string;
-  readonly label: string;
-  readonly baseUrl?: string;
-  readonly docs?: string;
-  readonly envVars?: readonly string[];
-  readonly hasDefinition: boolean;
-  readonly note?: string;
-}
-
 /** A lint error from `POST /api/defs/validate`. Servers may return plain strings or {field, message}. */
 export type DefinitionIssue = string | { readonly field?: string; readonly message: string };
 
@@ -116,11 +105,6 @@ export function saveUserDefinition(id: string, toml: string): Promise<void> {
 
 export function deleteUserDefinition(id: string): Promise<void> {
   return request<void>(`/api/defs/user/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
-
-/** The catalog is optional until the defs engine lands; callers should tolerate a 404. */
-export function listCatalog(): Promise<DefinitionCatalogEntry[]> {
-  return request<DefinitionCatalogEntry[]>("/api/defs/catalog");
 }
 
 /** Human-readable text for a validation issue, whatever shape the server used. */

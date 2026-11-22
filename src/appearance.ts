@@ -21,6 +21,27 @@ import { computeBootPalette, writeBootPalette, type BootPalette } from "~/themes
 import { useAppearanceSettingsBridge } from "~/themes/store";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
+const MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+export const REDUCED_MOTION_CHANGE = "burnrate:reduced-motion-change";
+
+export function resolveReducedMotion(setting: AppSettings["appearance"]["reduceMotion"], system: boolean): boolean {
+  return setting === "on" || (setting === "system" && system);
+}
+
+export function isReducedMotion(): boolean {
+  const system = typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(MOTION_QUERY).matches
+    : false;
+  return resolveReducedMotion(getSettings().appearance.reduceMotion, system);
+}
+
+function applyMotionPreference(): void {
+  const root = document.documentElement;
+  const next = isReducedMotion() ? "on" : "off";
+  if (root.dataset.reduceMotion === next) return;
+  root.dataset.reduceMotion = next;
+  window.dispatchEvent(new Event(REDUCED_MOTION_CHANGE));
+}
 
 /** T3's contrast scale is 50-200 (100 = stock). 150 pushes text half way to black/white. */
 export const HIGH_CONTRAST_LEVEL = 150;
@@ -93,8 +114,14 @@ export function applyAppearance(settings: AppSettings, systemDark = systemDarkNo
   root.classList.toggle("dark", dark);
   root.style.colorScheme = dark ? "dark" : "light";
   // T3's fixed radius, spacing and scale: saved radius/density/uiScale keys are ignored.
-  if (appearance.reduceMotion === "system") delete root.dataset.reduceMotion;
-  else root.dataset.reduceMotion = appearance.reduceMotion;
+  const systemReducedMotion = typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(MOTION_QUERY).matches
+    : false;
+  const nextMotion = resolveReducedMotion(appearance.reduceMotion, systemReducedMotion) ? "on" : "off";
+  if (root.dataset.reduceMotion !== nextMotion) {
+    root.dataset.reduceMotion = nextMotion;
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(REDUCED_MOTION_CHANGE));
+  }
   if (appearance.highContrast) root.dataset.highContrast = "true";
   else delete root.dataset.highContrast;
   // High contrast must reach the `--appearance-contrast-*` chain too: the CSS block in appearance.css only
@@ -121,6 +148,9 @@ export function startClientAppearance(): () => void {
 
   const onSystemChange = () => applyAppearanceFromSettings();
   const unsubscribeSystem = subscribeToSystemDark(onSystemChange);
+  const motionQuery = typeof window.matchMedia === "function" ? window.matchMedia(MOTION_QUERY) : null;
+  const onMotionChange = () => applyMotionPreference();
+  motionQuery?.addEventListener("change", onMotionChange);
 
   const onStorage = (event: StorageEvent) => {
     if (event.key === "burnrate.settings.mirror" || event.key === null) {
@@ -147,6 +177,7 @@ export function startClientAppearance(): () => void {
 
   return () => {
     unsubscribeSystem();
+    motionQuery?.removeEventListener("change", onMotionChange);
     window.removeEventListener("storage", onStorage);
   };
 }

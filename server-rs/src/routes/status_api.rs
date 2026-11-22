@@ -13,14 +13,36 @@ const HEARTBEAT: Duration = Duration::from_secs(25);
 /// How long EventSource waits before reconnecting if the connection ever drops.
 const RETRY_MS: u32 = 3000;
 
-pub fn handle(_state: &crate::State, _request: &mut Request, method: &Method, path: &str) -> Option<Resp> {
+pub fn handle(_state: &crate::State, request: &mut Request, method: &Method, path: &str) -> Option<Resp> {
     match (method, path) {
         (Method::Get, "/api/status") => {
-            // A client polling status is an active consumer of fresh data.
-            scheduler::note_activity();
+            // An interactive status read is a consumer signal; the shell's passive seed is not.
+            if !is_passive(request) {
+                scheduler::note_activity();
+            }
             Some(json_response(200, &scheduler::compact_status()))
         }
         _ => None,
+    }
+}
+
+/// The native shell marks its long-lived stream and its initial status seed as passive so they
+/// cannot keep the background scheduler awake while the window is closed or minimised.
+fn is_passive(request: &Request) -> bool {
+    request
+        .headers()
+        .iter()
+        .any(|h| h.field.equiv("X-Burnrate-Passive") && h.value.as_str().trim() == "1")
+}
+
+/// Unregisters an interactive stream from the scheduler on every exit path.
+struct StreamGuard(bool);
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            scheduler::note_stream(false);
+        }
     }
 }
 
@@ -43,7 +65,14 @@ pub fn is_stream_request(method: &Method, path: &str) -> bool {
 /// immediately: headers and the cached snapshot go out at once, later events follow as the hub publishes them,
 /// and a heartbeat comment keeps idle connections alive. The body ends when the client disconnects (a failed
 /// write) or the hub drops this subscription. Capped at `hub::MAX_STREAM_SUBSCRIBERS` streams.
+/// A `X-Burnrate-Passive: 1` request (the shell) is not registered as an active consumer, so it
+/// cannot keep the scheduler's refresh loop awake while the app is in the tray.
 pub fn serve_stream(request: Request) {
+    let passive = is_passive(&request);
+    let _stream_guard = StreamGuard(!passive);
+    if !passive {
+        scheduler::note_stream(true);
+    }
     let Some(subscription) = hub::subscribe() else {
         let _ = request.respond(json_response(429, &json!({"error": "too many streams"})));
         return;

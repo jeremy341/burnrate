@@ -10,6 +10,7 @@ use crate::State;
 use chrono::{Datelike, TimeZone, Utc};
 use chrono_tz::Tz;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -349,6 +350,15 @@ pub fn sum_costs(summary: &Value, matcher: &Matcher, since_hour: Option<&str>, u
     if total.is_finite() { total.max(0.0) } else { 0.0 }
 }
 
+/// One settled summary plus the hour bounds that go with it. Budgets whose cycles coincide share
+/// this value: the engine is settled once for the whole group, then each budget sums it with its own
+/// matcher.
+struct CycleCost {
+    summary: Value,
+    since_hour: String,
+    until_hour: String,
+}
+
 /// Local cost reader over the engine's public `summary` API. `Engine`/`Engine::summary` are not
 /// modified: the hourly buckets it already produces are filtered and summed here.
 pub struct CostReader<'a> {
@@ -362,11 +372,9 @@ impl<'a> CostReader<'a> {
         CostReader { engine, settings, time_zone }
     }
 
-    /// Cost in the engine's currency (USD) between two epoch-ms instants.
-    pub fn cost_between(&self, matcher: &Matcher, since_ms: i64, until_ms: i64) -> f64 {
-        if until_ms <= since_ms {
-            return 0.0;
-        }
+    /// Settle one cycle. Distinct reset days produce distinct `(start, next_reset)` keys, so this
+    /// is never called twice for a cycle that differs in its SummaryInput.
+    fn settle_cycle(&self, since_ms: i64, until_ms: i64) -> CycleCost {
         // engine.summary() warns once when the name is invalid; fall back to UTC here too so
         // both the summary and the hour filters use the same anchor.
         let (tz, _) = crate::engine::time_zone_or_utc(self.time_zone);
@@ -384,12 +392,20 @@ impl<'a> CostReader<'a> {
             self.settings,
             std::time::Duration::from_millis(1500),
         );
-        sum_costs(
-            &summary,
-            matcher,
-            Some(&local_fmt(&tz, since_ms, "%Y-%m-%dT%H:00")),
-            Some(&local_fmt(&tz, until_ms, "%Y-%m-%dT%H:00")),
-        )
+        CycleCost {
+            summary,
+            since_hour: local_fmt(&tz, since_ms, "%Y-%m-%dT%H:00"),
+            until_hour: local_fmt(&tz, until_ms, "%Y-%m-%dT%H:00"),
+        }
+    }
+
+    /// Cost in the engine's currency (USD) between two epoch-ms instants.
+    pub fn cost_between(&self, matcher: &Matcher, since_ms: i64, until_ms: i64) -> f64 {
+        if until_ms <= since_ms {
+            return 0.0;
+        }
+        let settled = self.settle_cycle(since_ms, until_ms);
+        sum_costs(&settled.summary, matcher, Some(&settled.since_hour), Some(&settled.until_hour))
     }
 }
 
@@ -401,9 +417,8 @@ pub fn cost_between(engine: &Engine, settings: &Settings, matcher: &Matcher, sin
 
 // ---- Limits report ---------------------------------------------------------------------------
 
-fn account(reader: &CostReader<'_>, tz: Tz, budget: &Budget, now_ms: i64) -> Value {
+fn account(tz: Tz, budget: &Budget, now_ms: i64, spend: f64) -> Value {
     let cycle = cycle(now_ms, budget.reset_day, tz);
-    let spend = reader.cost_between(&budget.matcher, cycle.start_ms, now_ms);
     let reset_at = crate::providers::iso_ms(cycle.next_reset_ms as f64);
     let mut window = json!({
         "id": "budget-monthly",
@@ -450,6 +465,21 @@ fn account(reader: &CostReader<'_>, tz: Tz, budget: &Budget, now_ms: i64) -> Val
     head
 }
 
+/// Group budget indices by their exact cycle. Different reset days can never share a group, so a
+/// single settle per group is safe. The budget list order is kept by writing results back by index.
+fn cycle_groups(budgets: &[Budget], now_ms: i64, tz: Tz) -> Vec<(Cycle, Vec<usize>)> {
+    let mut groups: Vec<(Cycle, Vec<usize>)> = Vec::new();
+    for (index, budget) in budgets.iter().enumerate() {
+        let cycle = cycle(now_ms, budget.reset_day, tz);
+        if let Some(group) = groups.iter_mut().find(|(held, _)| *held == cycle) {
+            group.1.push(index);
+        } else {
+            groups.push((cycle, vec![index]));
+        }
+    }
+    groups
+}
+
 /// One synthetic `LimitsAccount` per configured budget. Called by `limits_report`.
 pub fn accounts(state: &State) -> Vec<Value> {
     let budgets = list();
@@ -459,7 +489,29 @@ pub fn accounts(state: &State) -> Vec<Value> {
     let settings = state.settings.get();
     let reader = CostReader::new(&state.engine, &settings, "UTC");
     let now_ms = Utc::now().timestamp_millis();
-    budgets.iter().map(|b| account(&reader, chrono_tz::UTC, b, now_ms)).collect()
+    let tz = chrono_tz::UTC;
+    let groups = cycle_groups(&budgets, now_ms, tz);
+
+    let mut settled_by_cycle: HashMap<(i64, i64), CycleCost> = HashMap::with_capacity(groups.len());
+    for (cycle, _) in &groups {
+        settled_by_cycle
+            .entry((cycle.start_ms, cycle.next_reset_ms))
+            .or_insert_with(|| reader.settle_cycle(cycle.start_ms, now_ms));
+    }
+
+    let mut spend_by_index = vec![0.0; budgets.len()];
+    for (cycle, indices) in groups {
+        let settled = &settled_by_cycle[&(cycle.start_ms, cycle.next_reset_ms)];
+        for index in indices {
+            spend_by_index[index] = sum_costs(
+                &settled.summary,
+                &budgets[index].matcher,
+                Some(&settled.since_hour),
+                Some(&settled.until_hour),
+            );
+        }
+    }
+    budgets.iter().zip(spend_by_index).map(|(b, spend)| account(tz, b, now_ms, spend)).collect()
 }
 
 #[cfg(test)]
@@ -534,6 +586,31 @@ mod tests {
         // Half-hour offsets: 00:00 local is not 00:00 UTC.
         let india: Tz = "Asia/Kolkata".parse().unwrap();
         assert_eq!(cycle(ms(2024, 3, 1, 2), 1, india).start_ms, ms_min(2024, 2, 29, 18, 30));
+    }
+
+    #[test]
+    fn cycle_groups_only_merges_identical_cycles() {
+        let budgets: Vec<Budget> = [1u8, 28, 1, 15]
+            .iter()
+            .enumerate()
+            .map(|(i, day)| Budget {
+                id: format!("b{i}"),
+                label: format!("B{i}"),
+                monthly_budget: 10.0,
+                currency: "USD".into(),
+                reset_day: *day,
+                matcher: Matcher::default(),
+                color: None,
+            })
+            .collect();
+        let now = ms(2024, 3, 10, 12);
+        let groups = cycle_groups(&budgets, now, chrono_tz::UTC);
+        assert_eq!(groups.len(), 3);
+        let indices: Vec<Vec<usize>> = groups.iter().map(|(_, ids)| ids.clone()).collect();
+        assert!(indices.contains(&vec![0, 2]), "same resetDay must share one group: {indices:?}");
+        assert!(indices.contains(&vec![1]));
+        assert!(indices.contains(&vec![3]));
+        assert_eq!(groups.iter().map(|(_, ids)| ids.clone()).flatten().count(), budgets.len());
     }
 
     #[test]

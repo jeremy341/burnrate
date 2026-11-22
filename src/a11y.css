@@ -40,23 +40,15 @@
 
 /* burnrate: appearance extras set these attributes; our additions never animate there either. */
 @media (prefers-reduced-motion: reduce) {
-  .br-usage-meter,
-  .br-usage-meter__fill,
-  .br-usage-meter__tick,
-  .br-usage-provenance,
-  .br-usage-stale,
-  .br-usage-balance {
+  html:not([data-reduce-motion="off"]) :is(.br-usage-meter, .br-usage-meter__fill,
+    .br-usage-meter__tick, .br-usage-provenance, .br-usage-stale, .br-usage-balance) {
     animation: none !important;
     transition: none !important;
   }
 }
 
-html[data-reduce-motion] .br-usage-meter,
-html[data-reduce-motion] .br-usage-meter__fill,
-html[data-reduce-motion] .br-usage-meter__tick,
-html[data-reduce-motion] .br-usage-provenance,
-html[data-reduce-motion] .br-usage-stale,
-html[data-reduce-motion] .br-usage-balance {
+html[data-reduce-motion="on"] :is(.br-usage-meter, .br-usage-meter__fill,
+  .br-usage-meter__tick, .br-usage-provenance, .br-usage-stale, .br-usage-balance) {
   animation: none !important;
   transition: none !important;
 }

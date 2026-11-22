@@ -14,7 +14,6 @@ function manualChunks(id: string): string | undefined {
   const file = norm(id);
   if (file.includes("/node_modules/")) {
     if (/node_modules\/(react|react-dom|scheduler)\//.test(file)) return "vendor-react";
-    if (file.includes("/node_modules/@base-ui/")) return "vendor-base-ui";
     if (file.includes("/node_modules/culori/")) return "vendor-color";
     if (file.includes("/node_modules/jsonc-parser/")) return "vendor-jsonc";
     // lucide-react stays unassigned: tree-shaking keeps only the icons in play and

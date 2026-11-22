@@ -35,10 +35,9 @@ pub(crate) fn setup(app: &AppHandle) -> tauri::Result<()> {
             "tray.settings" => crate::windows::open_main(app, Some("settings")),
             "tray.refresh" => {
                 if let Some(state) = app.try_state::<std::sync::Arc<AppState>>() {
-                    // `GET /api/limits` is the refresh path the UI's own refresh button uses
-                    // (`api.limits()`); it refreshes the shared report cache in the server
-                    // and counts as an active consumer for the background scheduler.
-                    let _ = stream::get_json(&state.base, "/api/limits");
+                    // Explicit Refresh bypasses the server's 30 s report cache so the user sees a
+                    // real probe, and counts as an active consumer for the background scheduler.
+                    let _ = stream::get_json(&state.base, "/api/limits?force=1");
                     // Keep the last known percent instead of flashing the `?` icon.
                     update(app, Some(state.last_percent.load(Ordering::Relaxed)));
                 }

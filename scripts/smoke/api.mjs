@@ -214,7 +214,7 @@ async function main() {
 
     await check("PATCH /api/settings deep-merges and keeps sibling fields", async () => {
       const result = await request("PATCH", "/api/settings", {
-        body: { patch: { appearance: { radius: 0.42 } } },
+        body: { patch: { appearance: { reduceMotion: "off" } } },
       });
       expectStatus(result, 200, "PATCH /api/settings");
       const body = expectJson(result, "PATCH /api/settings");
@@ -224,7 +224,7 @@ async function main() {
           ? expectJson(await request("GET", "/api/settings"), "GET /api/settings after PATCH")
           : body;
       validateSettings(settings);
-      expect(settings.appearance.radius === 0.42, `settings.appearance.radius: expected 0.42, got ${settings.appearance.radius}`);
+      expect(settings.appearance.reduceMotion === "off", `settings.appearance.reduceMotion: expected off, got ${settings.appearance.reduceMotion}`);
       expect(
         settings.appearance.density === "comfortable",
         "PATCH replaced the whole appearance section instead of deep-merging it",
@@ -233,14 +233,14 @@ async function main() {
 
     await check("PATCH /api/settings rejects a bad field with {error,field}", async () => {
       const result = await request("PATCH", "/api/settings", {
-        body: { patch: { appearance: { radius: "big" } } },
+        body: { patch: { appearance: { reduceMotion: "fast" } } },
       });
       expectStatus(result, 400, "invalid PATCH /api/settings");
       const body = expectJson(result, "invalid PATCH /api/settings");
       expect(body.error === "invalid settings", `error: expected "invalid settings", got ${JSON.stringify(body.error)}`);
       expect(
-        body.field === "appearance.radius",
-        `field: expected "appearance.radius", got ${JSON.stringify(body.field)}`,
+        body.field === "appearance.reduceMotion",
+        `field: expected "appearance.reduceMotion", got ${JSON.stringify(body.field)}`,
       );
     });
 
@@ -280,11 +280,11 @@ async function main() {
 
     await check("POST /api/settings/import merge returns the new settings", async () => {
       const result = await request("POST", "/api/settings/import", {
-        body: { settings: { appearance: { radius: 0.55 } }, mode: "merge" },
+        body: { settings: { appearance: { reduceMotion: "off" } }, mode: "merge" },
       });
       expectStatus(result, 200, "POST /api/settings/import");
       const settings = validateSettings(expectJson(result, "POST /api/settings/import"));
-      expect(settings.appearance.radius === 0.55, `settings.appearance.radius: expected 0.55, got ${settings.appearance.radius}`);
+      expect(settings.appearance.reduceMotion === "off", `settings.appearance.reduceMotion: expected off, got ${settings.appearance.reduceMotion}`);
       expect(exported !== null, "export must pass before import is checked");
     });
 
@@ -292,12 +292,14 @@ async function main() {
       const result = await request("POST", "/api/settings/reset", { body: { scope: "all" } });
       expectStatus(result, 200, "POST /api/settings/reset");
       const settings = validateSettings(expectJson(result, "POST /api/settings/reset"));
-      expect(settings.appearance.radius === 0.5, `settings.appearance.radius: expected default 0.5, got ${settings.appearance.radius}`);
+      expect(settings.appearance.themeMode === "dark", `reset must restore the themeMode default, got ${settings.appearance.themeMode}`);
+      expect(settings.appearance.reduceMotion === "system", `reset must restore the reduceMotion default, got ${settings.appearance.reduceMotion}`);
+      expect(settings.appearance.radius === undefined, "the deprecated radius field has no default");
     });
 
     await check("POST /api/settings/reset {scope:section} resets one section", async () => {
       const changed = await request("PATCH", "/api/settings", {
-        body: { patch: { appearance: { radius: 0.66 } } },
+        body: { patch: { appearance: { reduceMotion: "off" } } },
       });
       expectStatus(changed, 200, "PATCH before section reset");
       const result = await request("POST", "/api/settings/reset", {
@@ -305,7 +307,8 @@ async function main() {
       });
       expectStatus(result, 200, "POST /api/settings/reset section");
       const settings = validateSettings(expectJson(result, "POST /api/settings/reset section"));
-      expect(settings.appearance.radius === 0.5, `settings.appearance.radius: expected default 0.5, got ${settings.appearance.radius}`);
+      expect(settings.appearance.reduceMotion === "system", `section reset must restore reduceMotion, got ${settings.appearance.reduceMotion}`);
+      expect(settings.appearance.radius === undefined, "the deprecated radius field has no default");
       expect(typeof settings.general.language === "string", "resetting one section must keep the others");
     });
 
@@ -429,11 +432,25 @@ async function main() {
     });
 
     await check("POST /api/defs/test with a missing key fails without a probe", async () => {
+      // `id` resolves a trusted registered definition. The missing key name must fail before any
+      // network probe, so no real provider is contacted.
       const result = await request("POST", "/api/defs/test", {
-        body: { toml: SMOKE_DEFINITION_TOML, keyName: "smoke-missing-key" },
+        body: { id: "openrouter", keyName: "smoke-missing-key" },
       });
       expectStatus(result, [200, 400], "POST /api/defs/test");
       expectJson(result, "POST /api/defs/test");
+    });
+
+    await check("POST /api/defs/test refuses TOML that is not a registered definition", async () => {
+      const result = await request("POST", "/api/defs/test", {
+        body: { toml: SMOKE_DEFINITION_TOML, keyName: "smoke-missing-key" },
+      });
+      expectStatus(result, 403, "untrusted defs/test TOML");
+      const body = expectJson(result, "untrusted defs/test TOML");
+      expect(
+        /registered definition/.test(body.error ?? ""),
+        `expected the key_hosts guard to explain the refusal, got ${JSON.stringify(body)}`,
+      );
     });
 
     await check("PUT/DELETE /api/defs/user/<id> round-trips a user definition", async () => {

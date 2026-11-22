@@ -89,10 +89,20 @@ fn window_bounds(since: &str, until: &str) -> (f64, f64) {
 }
 
 /// A template per distinct (provider, model, rate model): only the numbers change per row, so the
-/// strings are built once instead of five `String`s per record.
-struct Dim {
+/// strings are built once instead of five `String`s per record. The effective rate is resolved here
+/// too: the alias/model that selects it never changes for a template.
+struct Dim<'a> {
     record: Record,
     bucket: u32,
+    rate: Option<pricing::EffectiveRate<'a>>,
+}
+
+/// Bucket identity. Interned ids avoid rebuilding Strings per distinct model; the name variant is
+/// the fallback for an alias target that was never interned by a transcript.
+#[derive(Hash, PartialEq, Eq)]
+enum BucketKey {
+    Ids(u32, u32),
+    Names(String, String),
 }
 
 fn fill(record: &mut Record, chunk: &[f64]) {
@@ -108,7 +118,7 @@ fn fill(record: &mut Record, chunk: &[f64]) {
     record.reported = if cost.is_nan() { None } else { Some(cost) };
 }
 
-pub(super) fn compute(inner: &Inner, providers: &[&'static str], dirs: &[String], input: &SummaryInput, settings: &Settings) -> Value {
+pub(super) fn compute<'a>(inner: &'a Inner, providers: &[&'static str], dirs: &[String], input: &SummaryInput, settings: &Settings) -> Value {
     let started = std::time::Instant::now();
     let aliases = resolve_aliases(&settings.aliases);
     let overrides = if settings.prices.is_empty() { None } else { Some(pricing::override_table(&settings.prices)) };
@@ -126,9 +136,24 @@ pub(super) fn compute(inner: &Inner, providers: &[&'static str], dirs: &[String]
     let mut slots = Slots { tz, since: input.since_day.clone(), until: input.until_day.clone(), map: HashMap::new(), days: Vec::new(), day_ids: HashMap::new() };
     let in_bounds = |ts: f64| ts >= lo && ts < hi;
 
+    // Cheap sizing pass over the packed rows: the dedupe/max sets can grow to the row count, while
+    // dims and buckets are bounded by the number of distinct models.
+    let mut rows_by_provider: Vec<usize> = Vec::with_capacity(providers.len());
+    let mut total_rows = 0usize;
+    let mut max_rows = 0usize;
+    for (index, provider) in providers.iter().enumerate() {
+        let count: usize = inner.views[index].rows.iter().map(|rows| rows.len() / STRIDE).sum();
+        rows_by_provider.push(count);
+        total_rows += count;
+        if max_merge(provider) {
+            max_rows += count;
+        }
+    }
+    let dim_capacity = total_rows.min(2048);
+
     // Keys that appear in several files count once, at the maximum of each channel, for the providers that
     // repeat a message key (Claude per content block, Antigravity per retry).
-    let mut maxed: HashMap<u64, [f64; 5]> = HashMap::new();
+    let mut maxed: HashMap<u64, [f64; 5]> = HashMap::with_capacity(max_rows);
     for (index, provider) in providers.iter().enumerate() {
         if !max_merge(provider) {
             continue;
@@ -151,12 +176,12 @@ pub(super) fn compute(inner: &Inner, providers: &[&'static str], dirs: &[String]
     let empty_session = inner.strings.lookup("").map_or(f64::NAN, f64::from);
     // Distinct sessions inside the requested window, per provider. `distinct_sessions` on the view is
     // all-time and stays reserved for "sessions on this computer" surfaces.
-    let mut window_sessions: Vec<HashSet<u64>> = (0..providers.len()).map(|_| HashSet::new()).collect();
-    let mut counted: HashSet<u64> = HashSet::new();
-    let mut dims: HashMap<(u64, u64, u64), usize> = HashMap::new();
-    let mut dim_list: Vec<Dim> = Vec::new();
-    let mut bucket_ids: HashMap<(String, String), u32> = HashMap::new();
-    let mut bucket_names: Vec<(String, String)> = Vec::new();
+    let mut window_sessions: Vec<HashSet<u64>> = rows_by_provider.iter().map(|&n| HashSet::with_capacity(n.min(1024))).collect();
+    let mut counted: HashSet<u64> = HashSet::with_capacity(total_rows);
+    let mut dims: HashMap<(u64, u64, u64), usize> = HashMap::with_capacity(dim_capacity);
+    let mut dim_list: Vec<Dim<'a>> = Vec::with_capacity(dim_capacity);
+    let mut bucket_ids: HashMap<BucketKey, u32> = HashMap::with_capacity(dim_capacity);
+    let mut bucket_names: Vec<(String, String)> = Vec::with_capacity(dim_capacity);
     let mut buckets: HashMap<(u32, u8, u32), Acc> = HashMap::new();
     for (index, provider) in providers.iter().enumerate() {
         let merge = max_merge(provider);
@@ -183,17 +208,26 @@ pub(super) fn compute(inner: &Inner, providers: &[&'static str], dirs: &[String]
                 let dim_key = (chunk[store::C_PROVIDER].to_bits(), chunk[store::C_MODEL].to_bits(), chunk[store::C_RATE_MODEL].to_bits());
                 let d = *dims.entry(dim_key).or_insert_with(|| {
                     let mut record = store::unpack(rows, i, &inner.strings);
-                    // A model name mapped to another is counted and priced as that one.
+                    let provider_id = chunk[store::C_PROVIDER] as u32;
+                    let mut bucket_key = BucketKey::Ids(provider_id, chunk[store::C_MODEL] as u32);
+                    // A model name mapped to another is counted and priced as that one. Key the
+                    // bucket by the interned target when possible so aliased models share it.
                     if let Some(target) = aliases.get(&record.model) {
                         record.model = target.clone();
                         record.rate_model = None;
+                        bucket_key = match inner.strings.lookup(target) {
+                            Some(id) => BucketKey::Ids(provider_id, id),
+                            None => BucketKey::Names(record.provider.clone(), record.model.clone()),
+                        };
                     }
-                    let names = (record.provider.clone(), record.model.clone());
-                    let bucket = *bucket_ids.entry(names.clone()).or_insert_with(|| {
+                    let rate = pricing::resolve_rate(&inner.rates, &record, overrides.as_ref());
+                    let bucket = *bucket_ids.entry(bucket_key).or_insert_with(|| {
+                        let names = (record.provider.clone(), record.model.clone());
+                        let id = bucket_names.len() as u32;
                         bucket_names.push(names);
-                        (bucket_names.len() - 1) as u32
+                        id
                     });
-                    dim_list.push(Dim { record, bucket });
+                    dim_list.push(Dim { record, bucket, rate });
                     dim_list.len() - 1
                 });
                 let dim = &mut dim_list[d];
@@ -212,14 +246,17 @@ pub(super) fn compute(inner: &Inner, providers: &[&'static str], dirs: &[String]
                 let b = buckets.entry((slot.day, hour, dim.bucket)).or_insert_with(|| {
                     let day = slots.days[slot.day as usize].clone();
                     let (provider, model) = bucket_names[dim.bucket as usize].clone();
-                    Acc { hour_start: input.hourly.then(|| format!("{day}T{:02}:00", slot.hour)), day, provider, model, ..Acc::default() }
+                    Acc { hour_start: input.hourly.then(|| format!("{day}T{:02}:00", slot.hour)), day, provider, model, sessions: HashSet::with_capacity(16), ..Acc::default() }
                 });
-                let priced = pricing::price(&inner.rates, r, overrides.as_ref());
+                let priced = match &dim.rate {
+                    Some(rate) => rate.price(r),
+                    None => pricing::price_unrated(r),
+                };
                 for (t, v) in b.totals.iter_mut().zip([r.uncached, r.cached, r.cache_write, r.output, r.reasoning]) {
                     *t += v;
                 }
                 b.cost += priced.cost;
-                b.cache_savings += pricing::cache_savings(&inner.rates, r, overrides.as_ref());
+                b.cache_savings += dim.rate.as_ref().map_or(0.0, |rate| rate.cache_savings(r));
                 if let Some(c) = priced.category {
                     b.has_category = true;
                     b.category.input += c.input;

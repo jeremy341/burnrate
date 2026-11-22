@@ -16,7 +16,7 @@
     "start:node": "node --max-old-space-size=128 --max-semi-space-size=2 server/index.ts",
     "sync:t3": "node scripts/sync-t3.mjs",
     "test": "vitest run",
-    "check:ownership": "node scripts/check-ownership.mjs",
+    "check:ownership": "node scripts/check-ownership.mjs 00 master",
     "smoke": "node scripts/smoke/smoke.mjs",
     "smoke:api": "node scripts/smoke/api.mjs",
     "perf": "node scripts/perf-budget.mjs",
