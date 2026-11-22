@@ -1,44 +1,48 @@
 # Burnrate design
 
-Derived from the stylesheet and components this project reuses (`src/index.css`, `src/components/ui`),
-not from screenshots. The look follows the Usage window of T3 Code: quiet, dense, monochrome with one
-accent, and provider colors only where they carry meaning (the quota bars).
+Derived from T3 Code's design system (`apps/web/src/index.css`, `themePalette.ts`). `src/index.css` stays
+byte-identical to T3's except two additions: the a11y divider floor and self-hosted Inter `@font-face`s.
 
-## Principles
-- Calm surfaces, thin borders, no shadows except popovers. Data is the color.
-- A bar shows quota **remaining**. A tick on the bar marks where even spending would be (pace).
-- Provider color appears only in bars and small marks. Everything else is neutral.
-- Light and dark are both first class. The root element carries the `dark` class.
-
-## Tokens (see `:root` in `src/index.css`)
+## Tokens (`:root` and dark variant in `src/index.css`)
 | Token | Light | Dark |
 |---|---|---|
-| `--background` | zinc-25 | `#000` |
-| `--foreground` | zinc-900 | neutral-100 |
-| `--card` | white | neutral-950 mixed with white 3% |
-| `--muted` | zinc-50 | white 3% |
-| `--border` | zinc-200 | white 8% |
+| `--radius` | 0.5rem | 0.5rem — fixed; sm/md/lg/xl/2xl/3xl derive from it |
+| `--spacing` | 0.25rem | 0.25rem — fixed; no density/scale multipliers |
+| `--background` | `#fcfcfc` | `#000` stock; themed default `#181818` |
+| `--foreground` | zinc-900 | neutral-100 / `#eee` themed |
+| `--card`, `--popover` | white | `#111` stock; themed from `--app-theme-surface` |
+| `--border` | zinc-200 | white 8%, lifted by `--divider-floor` (a11y) |
 | `--primary` | `oklch(0.488 0.217 264)` | `oklch(0.571 0.21 264)` |
-| `--radius` | 0.5rem (sm/md/lg/xl/2xl/3xl derive from it) | same |
 
-Typography: Inter Variable (sans), system monospace. Small sizes `text-2xs` to `text-5xs` exist for dense data.
+## Type
+Inter Variable, self-hosted in all seven subsets, latin face preloaded at boot. Sans stack
+`-apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif`; mono
+`ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace`.
+Dense sizes: `text-2xs` 11px, `3xs` 10px, `4xs` 8px, `5xs` 7px, with T3's line-height ratios.
+Figures use `tabular-nums`.
 
-## Components
-Built on Base UI primitives: `Button` (variants default, outline, ghost, ghost-muted; sizes xs, sm, icon-sm,
-compact), `ToggleGroup` with `variant="segmented"` for view switches, `Tooltip`, `Popover`, `Dialog`,
-`Alert`, `Input`, `Select`, `Table`, `Skeleton`, `ScrollArea`.
+## Theme engine
+The default dark theme `burnrate-dark` (`src/themes/engine/burnrateDark.ts`) is T3's derived palette for
+canvas `#181818` + accent `#ffffff`: `#181818` canvas, `#242424` raised surface, `#eeeeee` text. All 61
+roles are published as `--app-theme-*` by `src/themePalette.ts`, exactly as in T3. Custom themes
+(T3-compatible v1 files, up to 100 KB CSS) live in the settings store and apply instantly. The light
+fallback is T3's stock `#fcfcfc` palette. `index.html` paints the saved palette and `theme-color`
+before React mounts, so there is no flash.
 
-## Limits view
-- One section per provider: icon, name, then one card per window (Session, Weekly, Monthly).
-- Card: big percent left, bar with one numbered segment per account, reset countdown at the right.
-- Hover or click a segment for a popover with account, plan, reset time and pace.
-- Accounts of one provider are pooled in one bar.
+## Accessibility (kept gains)
+`--divider-floor` keeps hairline borders visible in dark; `prefers-contrast: more` and High contrast
+raise it further. Forced colors use system colors; reduced motion (OS or `data-reduce-motion`) stops
+animation. Focus stays `focus-visible:ring-2 ring-ring`; interactive targets are at least 24x24.
 
-## Providers view
-One card per provider with connection state. API-key providers take a name and a write-only key; login
-providers read an existing sign-in on this computer. A key is never displayed after saving.
+## Brand
+Claude bars/lines are always `#d97757`; Codex is always `var(--contrast-foreground)`. Provider chart
+lines are solid — no opacity control, no right-click menu. The corner-radius, density
+and UI-scale settings are gone: their saved keys are tolerated and ignored, and the app uses T3's
+fixed radius, spacing and scale tokens.
 
-## Adding a provider
-Add a server module (`server/providers/<id>.ts`) and list it in `server/providers/index.ts`. The UI takes
-name, color and connection kind from the server. Add a brand mark in `src/providers/ProviderIcon.tsx` if it
-has one; otherwise initials are shown.
+## Shell
+A persistent top bar carries Usage / Providers and the Settings gear; the active link uses
+`aria-current="page"` and a primary underline. The view lives in the URL hash. Page rhythm mirrors
+`--workspace-gutter` (12px / 20px), with `viewport-fit=cover` for safe areas. Usage is the exception: it keeps
+T3's own frame (`WorkspacePageContainer width="usage"`, a 1024px column with 20px / 24px padding), so it reads
+the same as T3's usage monitor.
