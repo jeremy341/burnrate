@@ -684,6 +684,9 @@ mod tests {
         // Adding a file directly in the root moves its mtime, so the fingerprint invalidates and
         // the new file is visible on the next call.
         fs::write(root.join("a.jsonl"), "{}\n").unwrap();
+        // Windows directory mtimes are coarse, so the mtime fingerprint may not move for a file
+        // created in the same tick. The TTL is the cross-platform invalidation guarantee.
+        std::thread::sleep(LISTING_TTL + Duration::from_millis(50));
         assert_eq!(walk_cached(&root, &accept, "pi").len(), 1);
         // A missing folder is never cached: creating it later is discovered immediately.
         let late = root.join("late");
