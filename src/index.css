@@ -93,6 +93,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --appearance-contrast-base: 100%;
   --appearance-contrast-boost: 0%;
   --appearance-contrast-border-boost: 0%;
+  /* Visibility floor for dividers, borders and input outlines. Added on top of the (JS-owned)
+     contrast boost so it survives applyAppearanceContrast(). T3's dark --border is white 8%, and
+     most surfaces use it at 50-70% alpha (border-border/60), which is ~5% on black: the Usage
+     window's section lines vanish. 0 in light, raised in dark (see the dark block below). */
+  --divider-floor: 0%;
+  --divider-floor-input: 0%;
   --appearance-contrast-target: black;
   --app-scrollbar-thumb: rgb(217 217 217);
   --app-scrollbar-thumb-hover: rgb(191 191 191);
@@ -133,7 +139,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   /* The prompt on phones: iOS zooms into any input under 16px on focus. */
   --font-size-prompt-touch: max(var(--font-size-prompt, 1rem), 16px);
   /* Horizontal gutter shared by the page header and the chat column, clear of
-     the device's safe area. */
+     the device's safe area. The Burnrate shell mirrors these exact steps with
+     `px-3 sm:px-5` (WorkspacePageContainer, UsagePage toolbar, AppHeader) so the
+     top bar and the content below it line up at 320 / 640 / 1100px. */
   --workspace-gutter: 0.75rem;
   --workspace-gutter-start: calc(env(safe-area-inset-left) + var(--workspace-gutter));
   --workspace-gutter-end: calc(env(safe-area-inset-right) + var(--workspace-gutter));
@@ -144,6 +152,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
   @variant dark {
     --appearance-contrast-target: white;
+    /* T3 draws dark borders at 8% white; a 7% floor measures as an invisible 1.24:1 hairline. */
+    --divider-floor: 8%;
+    --divider-floor-input: 6%;
     /* Keeps the idle thumb above 3:1 (WCAG 1.4.11) on #000; 35% renders as gray 89, just under. */
     --app-scrollbar-thumb: rgb(255 255 255 / 36%);
     --app-scrollbar-thumb-hover: rgb(255 255 255 / 45%);
@@ -163,6 +174,75 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --workspace-native-controls-inset: calc(
     100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
   );
+}
+
+/* Inter Variable, the full T3 set: every subset @fontsource-variable/inter ships (cyrillic,
+   greek, vietnamese, latin and their extensions), exactly like T3's bundle. The browser only
+   downloads a subset when the page contains a glyph in its unicode-range, so the cost of the
+   extra faces is zero for latin-only text. The latin face is also preloaded at boot
+   (appearanceFonts.ts) so the first frame never swaps from the system stack. Vite rebases the
+   package URLs to hashed assets. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-cyrillic-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0460-052F,U+1C80-1C8A,U+20B4,U+2DE0-2DFF,U+A640-A69F,U+FE2E-FE2F;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-cyrillic-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-greek-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+1F00-1FFF;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-greek-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0370-0377,U+037A-037F,U+0384-038A,U+038C,U+038E-03A1,U+03A3-03FF;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-vietnamese-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
 }
 
 /* The font tokens are declared outside the inline theme so utilities reference
@@ -1301,6 +1381,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+
+
+
 /* Sections in the provider detail pane sit flat in its card instead of nesting cards inside
    it. Headings and row dividers still separate them. */
 [data-provider-detail] [data-slot="settings-group"] {
@@ -1612,7 +1695,7 @@ html[data-theme-id="t3-chat"] [data-app-sidebar] {
   --contrast-toolbar-border: color-mix(
     in srgb,
     color-mix(in srgb, var(--toolbar-border) var(--appearance-contrast-base), transparent),
-    var(--toolbar-foreground) var(--appearance-contrast-border-boost)
+    var(--toolbar-foreground) calc(var(--appearance-contrast-border-boost) + var(--divider-floor))
   );
   --contrast-toolbar-control-foreground: color-mix(
     in oklab,
@@ -1626,12 +1709,12 @@ html[data-theme-id="t3-chat"] [data-app-sidebar] {
   --contrast-input: color-mix(
     in srgb,
     color-mix(in srgb, var(--input) var(--appearance-contrast-base), transparent),
-    var(--foreground) var(--appearance-contrast-border-boost)
+    var(--foreground) calc(var(--appearance-contrast-border-boost) + var(--divider-floor-input))
   );
   --contrast-border: color-mix(
     in srgb,
     color-mix(in srgb, var(--border) var(--appearance-contrast-base), transparent),
-    var(--foreground) var(--appearance-contrast-border-boost)
+    var(--foreground) calc(var(--appearance-contrast-border-boost) + var(--divider-floor))
   );
   --contrast-foreground: color-mix(
     in oklab,
@@ -1708,7 +1791,7 @@ html[data-theme-id="t3-chat"] [data-app-sidebar] {
   --contrast-sidebar-border: color-mix(
     in srgb,
     color-mix(in srgb, var(--sidebar-border) var(--appearance-contrast-base), transparent),
-    var(--sidebar-foreground) var(--appearance-contrast-border-boost)
+    var(--sidebar-foreground) calc(var(--appearance-contrast-border-boost) + var(--divider-floor))
   );
 }
 
@@ -2482,7 +2565,7 @@ code {
 
 /* Rich text composer (Tiptap). The stored prompt stays markdown; only the
    surface renders styled text. Markers (** * ` ~~) appear as non-editable
-   widgets while the caret is on styled text. */
+   chips while the caret is on styled text. */
 .composer-tiptap {
   position: relative;
 }
@@ -2648,4 +2731,125 @@ code {
 
 .messages-timeline-scroll:focus-visible {
   outline: none;
+}
+
+/* Desktop-app feel. Chrome (tabs, buttons, segmented controls, menu triggers, column heads) is not
+   text: it is not selectable and cannot be dragged like a web page's links and images. Data,
+   errors and field values stay selectable and copyable. */
+@layer base {
+  ::selection {
+    background: color-mix(in oklab, var(--color-primary) 30%, transparent);
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  [data-slot="app-shell"]
+    :is(button, [role="button"], [role="tab"], nav, th, [data-slot="toggle-group"], [data-slot="menu-trigger"]) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  [data-slot="app-shell"] :is(img, svg, a) {
+    -webkit-user-drag: none;
+  }
+}
+
+.burnrate-segment[data-pressed] {
+  border-color: var(--border);
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+@media (forced-colors: active) {
+  .burnrate-segment[data-pressed] {
+    border-block-end-color: Highlight;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Burnrate motion layer: shared timing tokens, screen enter, load-in stagger.
+ * Everything here animates transform/opacity only and stays under 300ms.
+ * Each block names prefers-reduced-motion, and the html[data-reduce-motion]
+ * switch in appearance.css additionally zeroes these durations and iterations.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* The screen that just became active fades in and rises 7px. The rule only
+   matches while [data-screen-active] is present — the attribute is cleared
+   while a kept-mounted screen is hidden — so every activation replays the
+   enter once, leaving a screen animates nothing, and interaction is never
+   delayed: the animation paints opacity/transform only, no layout. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes br-screen-enter {
+    from {
+      opacity: 0;
+      transform: translateY(7px);
+    }
+  }
+
+  [data-screen-active] {
+    animation: br-screen-enter var(--motion-base) var(--motion-ease);
+  }
+}
+
+/* Collapsible open/close and measured-height wrappers share the same timing
+   (the components' own `duration-200 ease-out` moves onto the tokens here). */
+[data-slot="collapsible-panel"],
+[data-slot="animated-height"] {
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--motion-ease);
+}
+
+/* List rows that mount after data has loaded fade in; the first four rows
+   stagger 20ms apart, everything after the fourth waits for the fourth
+   (max 60ms). @starting-style fires on insertion, so re-ordering, un-hiding
+   a provider or changing a settings section get the same quiet fade. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-slot="connected-accounts"] > li,
+  [data-slot="settings-group"] > [data-slot="settings-row"] {
+    transition: opacity var(--motion-fast) var(--motion-ease);
+    transition-delay: 60ms;
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
+
+  [data-slot="connected-accounts"] > li:nth-child(1),
+  [data-slot="settings-group"] > [data-slot="settings-row"]:nth-child(1) {
+    transition-delay: 0ms;
+  }
+
+  [data-slot="connected-accounts"] > li:nth-child(2),
+  [data-slot="settings-group"] > [data-slot="settings-row"]:nth-child(2) {
+    transition-delay: 20ms;
+  }
+
+  [data-slot="connected-accounts"] > li:nth-child(3),
+  [data-slot="settings-group"] > [data-slot="settings-row"]:nth-child(3) {
+    transition-delay: 40ms;
+  }
+}
+
+/* The shared soft ease-out under the name the motion brief uses; it is the
+   same curve as --motion-ease above. */
+:root {
+  --ease-out-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* A press shrinks a button 2%, transform only, so the press never moves
+   layout. Buttons that own a popup (aria-haspopup) skip it, because their
+   press state is the open state, not a tap. Reduced motion drops it whole. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-slot="button"]:active:not([aria-haspopup]):not(:disabled):not([aria-disabled="true"]),
+  [data-slot="inline-button"]:active:not(:disabled):not([aria-disabled="true"]) {
+    scale: 0.98;
+  }
 }
