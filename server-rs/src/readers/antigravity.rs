@@ -343,17 +343,19 @@ fn read_database(
     };
     let mut trajectory_ts: Option<f64> = None;
     if tables.contains("trajectory_metadata_blob") {
+        // The table has only a `data` column; the timestamp is inside each protobuf. Read blobs
+        // one at a time and stop at the first that carries a timestamp, instead of materialising
+        // the whole table for a single value. This keeps the original "first usable" choice.
         let mut stmt = db
             .prepare("SELECT data FROM trajectory_metadata_blob")
             .map_err(|e| e.to_string())?;
-        let blobs: Vec<Vec<u8>> = stmt
+        let blobs = stmt
             .query_map([], |r| r.get::<_, Vec<u8>>(0))
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .collect();
-        for b in blobs {
-            if trajectory_ts.is_none() {
-                trajectory_ts = timestamp(&nested(&fields(&b)?, 2)?);
+            .map_err(|e| e.to_string())?;
+        for b in blobs.flatten() {
+            if let Some(ts) = timestamp(&nested(&fields(&b)?, 2)?) {
+                trajectory_ts = Some(ts);
+                break;
             }
         }
     }

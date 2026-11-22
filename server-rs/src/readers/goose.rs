@@ -14,6 +14,7 @@
 use super::{db_file, env_path, home, FileInfo, Source};
 use crate::readers::project::project_from_cwd;
 use crate::types::{parse_rfc3339_ms, ReadResult, Record};
+use chrono::{TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -94,6 +95,17 @@ fn cell_f64(row: &rusqlite::Row, index: usize) -> f64 {
     }
 }
 
+/// Whole-second prefix matching Goose's UTC `YYYY-MM-DD HH:MM:SS(.fff)` text. Truncating to the
+/// second keeps the SQL filter a superset: rows inside the cutoff second are still left to Rust,
+/// which compares with millisecond precision.
+fn cutoff_text(since_ms: f64) -> String {
+    let secs = (since_ms / 1000.0).floor() as i64;
+    Utc.timestamp_opt(secs, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
 /// Goose writes `YYYY-MM-DD HH:MM:SS(.fff)` in UTC; read it as such.
 pub fn session_ts(raw: &str) -> Option<f64> {
     if let Some(ts) = parse_rfc3339_ms(raw) {
@@ -150,9 +162,19 @@ impl Source for Goose {
         let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| e.to_string())?;
         let _ = db.busy_timeout(std::time::Duration::from_millis(1000));
-        let mut stmt = db.prepare("SELECT id, working_dir, created_at, updated_at, accumulated_input_tokens, accumulated_output_tokens, provider_name, CAST(model_config_json AS TEXT) FROM sessions").map_err(|e| e.to_string())?;
+        // `updated_at` wins when present, else `created_at` (the same choice Rust makes below).
+        // The GLOB guard applies the text cutoff only to Goose's canonical UTC format; anything
+        // else (RFC 3339 with a zone, NULL, malformed) is left for the Rust safety net, so the
+        // filter can only drop rows that are certainly too old.
+        let stamp_expr = "CASE WHEN updated_at IS NULL OR TRIM(updated_at) = '' THEN created_at ELSE updated_at END";
+        let canonical = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]*";
+        let sql = format!(
+            "SELECT id, working_dir, created_at, updated_at, accumulated_input_tokens, accumulated_output_tokens, provider_name, CAST(model_config_json AS TEXT) FROM sessions \
+             WHERE NOT ({stamp_expr} GLOB '{canonical}' AND {stamp_expr} < ?1)"
+        );
+        let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([cutoff_text(since_ms)], |row| {
                 Ok((
                     cell_text(row, 0),
                     cell_text(row, 1),
@@ -276,6 +298,38 @@ mod tests {
         assert_eq!(r.uncached, 1200.0);
         assert_eq!(r.output, 300.0);
         assert_eq!(r.session, "s1");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sql_cutoff_keeps_exactly_the_rust_rows() {
+        let dir = temp_dir();
+        let db = dir.join("sessions.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TEXT, updated_at TEXT, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER, provider_name TEXT, model_config_json TEXT);").unwrap();
+        let insert = |row: &str| {
+            conn.execute(&format!("INSERT INTO sessions VALUES ({row})"), []).unwrap();
+        };
+        // Exactly on the cutoff: kept.
+        insert("'s1','chat','/dev/app','2026-11-20 10:00:00','2026-11-20 10:00:00',100,50,'openai','{}'");
+        // Old canonical row: dropped in SQL before any JSON work.
+        insert("'s2','chat','/dev/app','2026-11-20 09:00:00','2026-11-20 09:00:00',100,50,'openai','{}'");
+        // RFC 3339 with an offset: UTC 14:30, so Rust keeps it even though its text sorts before
+        // the cutoff. The GLOB guard must leave it to Rust.
+        insert("'s3','chat','/dev/app','2026-11-19T23:30:00-15:00','2026-11-19T23:30:00-15:00',100,50,'openai','{}'");
+        // Zero usage: kept by SQL (not old) but skipped by the Rust zero-usage guard.
+        insert("'s4','chat','/dev/app','2026-11-20 11:00:00','2026-11-20 11:00:00',0,0,'openai','{}'");
+        // Malformed date: left to Rust, which drops it.
+        insert("'s5','chat','/dev/app','not a date','not a date',100,50,'openai','{}'");
+        // Empty updated_at falls back to created_at in both SQL and Rust.
+        insert("'s6','chat','/dev/app','2026-11-20 10:30:00','',100,50,'openai','{}'");
+        drop(conn);
+
+        let since = parse_rfc3339_ms("2026-11-20T10:00:00Z").unwrap();
+        let result = Goose.read(&db, since).unwrap();
+        let mut sessions: Vec<&str> = result.records.iter().map(|r| r.session.as_str()).collect();
+        sessions.sort_unstable();
+        assert_eq!(sessions, vec!["s1", "s3", "s6"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

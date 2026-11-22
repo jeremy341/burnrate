@@ -10,11 +10,13 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
 import { Button } from "~/components/ui/button";
+import { isReducedMotion, REDUCED_MOTION_CHANGE } from "~/appearance";
 import { msg, useGT } from "~/i18n";
 import { toast, useToasts, type ToastItem, type ToastType } from "~/lib/toast";
 import { cn } from "~/lib/utils";
@@ -53,8 +55,17 @@ const SWIPE_DISMISS_PX = 80;
 // T3's toast stack: 12px peek and a 10% scale step per card behind the front one.
 const STACK_PEEK_PX = 12;
 const STACK_SCALE_STEP = 0.1;
-// The stack settle transition, in ms. Exiting cards are kept exactly this long.
-const STACK_SETTLE_MS = 500;
+// Keep the same card mounted for its 160 ms exit, unless motion is reduced.
+const TOAST_EXIT_MS = 160;
+
+export function toastStack(items: readonly ToastItem[]): readonly ToastItem[] {
+  return [...items].reverse();
+}
+
+function subscribeMotion(listener: () => void) {
+  window.addEventListener(REDUCED_MOTION_CHANGE, listener);
+  return () => window.removeEventListener(REDUCED_MOTION_CHANGE, listener);
+}
 
 interface ExitedToast {
   readonly item: ToastItem;
@@ -112,7 +123,8 @@ function ToastCard({
   };
 
   const style: CSSProperties = {
-    zIndex: 100 - index,
+    // IDs increase with insertion order, so an exiting older card never covers a newer one.
+    zIndex: item.id,
     transformOrigin: "top center",
     transform: `translate3d(${swipeX}px, ${index * STACK_PEEK_PX}px, 0) scale(${Math.max(0, 1 - index * STACK_SCALE_STEP)})`,
   };
@@ -122,11 +134,9 @@ function ToastCard({
       data-slot="toast"
       data-type={item.type}
       inert={exiting || undefined}
+      aria-hidden={exiting || undefined}
       className={cn(
-        "dropdown-glass pointer-events-auto absolute inset-x-0 top-0 rounded-lg text-popover-foreground shadow-xl shadow-black/25 select-none",
-        "transition-transform duration-500 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
-        // A dragged card tracks the pointer 1:1; only the settle after release animates.
-        swipeX !== 0 && "transition-none",
+        "pointer-events-auto absolute inset-x-0 top-0 select-none",
         exiting && "pointer-events-none",
       )}
       style={style}
@@ -137,11 +147,11 @@ function ToastCard({
     >
       <div
         className={cn(
-          "transition-[transform,opacity] duration-500 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
+          "dropdown-glass rounded-lg text-popover-foreground shadow-xl shadow-black/25",
+          "transition-[opacity,translate] duration-160 ease-[cubic-bezier(0.2,0.7,0.2,1)]",
           !exiting && "starting:opacity-0",
-          !exiting && "starting:translate-x-[calc(100%_+_var(--toast-inset))]",
-          // The exit target matches the enter origin: off past the viewport inset.
-          exiting && "translate-x-[calc(100%_+_var(--toast-inset))] opacity-0",
+          !exiting && "starting:translate-x-2",
+          exiting && "translate-x-2 opacity-0",
         )}
       >
       <div className={toastCornerDismissClass}>
@@ -211,31 +221,49 @@ function ToastCard({
 /** Mounted once by AppProviders through the overlay registry. */
 export function Overlay() {
   const items = useToasts();
+  const reducedMotion = useSyncExternalStore(subscribeMotion, isReducedMotion, () => false);
   const gt = useGT();
   const labelNotifications = gt("Notifications");
   const labelDismiss = gt("Dismiss notification");
-  // Dismissed cards stay mounted until their exit transition finishes; the store has already dropped them.
-  const [exiting, setExiting] = useState<readonly ExitedToast[]>([]);
-  const itemsRef = useRef(items);
-  const exitTimers = useRef<Set<number>>(new Set());
+  type DisplayedToast = ExitedToast & { readonly exiting: boolean };
+  const [display, setDisplay] = useState<{
+    items: readonly ToastItem[];
+    reduced: boolean;
+    entries: readonly DisplayedToast[];
+  }>(() => ({ items, reduced: reducedMotion, entries: toastStack(items).map((item, index) => ({ item, index, exiting: false })) }));
+  const exitTimers = useRef(new Map<number, number>());
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- dismissed cards stay mounted until their exit transition finishes, then drop out of the list
+  // Reconcile before React commits: a dismissed card retains its DOM node for the exit.
+  if (display.items !== items || display.reduced !== reducedMotion) {
+    const active = toastStack(items).map((item, index) => ({ item, index, exiting: false }));
+    const activeIds = new Set(items.map((item) => item.id));
+    const leaving = reducedMotion ? [] : display.entries
+      .filter((entry) => !activeIds.has(entry.item.id))
+      .map((entry) => ({ ...entry, exiting: true }));
+    setDisplay({ items, reduced: reducedMotion, entries: [...active, ...leaving] });
+  }
+
   useEffect(() => {
-    const removed = diffExitedToasts(itemsRef.current, items);
-    itemsRef.current = items;
-    if (removed.length === 0) return;
-    setExiting((current) => [...current, ...removed]);
-    const timerId = window.setTimeout(() => {
-      exitTimers.current.delete(timerId);
-      const removedIds = new Set(removed.map((entry) => entry.item.id));
-      setExiting((current) => current.filter((entry) => !removedIds.has(entry.item.id)));
-    }, STACK_SETTLE_MS);
-    exitTimers.current.add(timerId);
-  }, [items]);
+    const exitingIds = new Set(display.entries.filter((entry) => entry.exiting).map((entry) => entry.item.id));
+    for (const [id, timer] of exitTimers.current) {
+      if (!exitingIds.has(id)) {
+        window.clearTimeout(timer);
+        exitTimers.current.delete(id);
+      }
+    }
+    for (const id of exitingIds) {
+      if (exitTimers.current.has(id)) continue;
+      const timer = window.setTimeout(() => {
+        exitTimers.current.delete(id);
+        setDisplay((current) => ({ ...current, entries: current.entries.filter((entry) => entry.item.id !== id || !entry.exiting) }));
+      }, TOAST_EXIT_MS);
+      exitTimers.current.set(id, timer);
+    }
+  }, [display.entries]);
 
   useEffect(
     () => () => {
-      for (const timerId of exitTimers.current) window.clearTimeout(timerId);
+      for (const timerId of exitTimers.current.values()) window.clearTimeout(timerId);
       exitTimers.current.clear();
     },
     [],
@@ -246,7 +274,7 @@ export function Overlay() {
     if (items.length === 0) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      const frontmost = items[items.length - 1];
+      const frontmost = toastStack(items)[0];
       if (!frontmost) return;
       event.preventDefault();
       toast.dismiss(frontmost.id);
@@ -255,7 +283,7 @@ export function Overlay() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [items]);
 
-  if (items.length === 0 && exiting.length === 0) return null;
+  if (display.entries.length === 0) return null;
 
   return (
     <div
@@ -272,22 +300,9 @@ export function Overlay() {
       role="region"
     >
       <ol className="relative m-0 list-none p-0">
-        {items
-          .map((item, index) => (
-            <ToastCard item={item} index={index} key={item.id} labelDismiss={labelDismiss} />
-          ))
-          .concat(
-            // One flat list, so a card that starts exiting keeps its DOM node and its exit transition plays instead of remounting.
-            exiting.map((entry) => (
-              <ToastCard
-                exiting
-                item={entry.item}
-                index={entry.index}
-                key={entry.item.id}
-                labelDismiss={labelDismiss}
-              />
-            )),
-          )}
+        {display.entries.map((entry) => (
+          <ToastCard exiting={entry.exiting} item={entry.item} index={entry.index} key={entry.item.id} labelDismiss={labelDismiss} />
+        ))}
       </ol>
     </div>
   );

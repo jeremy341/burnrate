@@ -12,13 +12,27 @@ use tauri::AppHandle;
 
 use crate::{autostart, notify, tray, AppState};
 
+/// The server thread may still be binding its port when the shell starts. Retry a few times with a
+/// short delay rather than treating a refused connection as a permanent failure.
+const STARTUP_SETTINGS_ATTEMPTS: usize = 10;
+const STARTUP_SETTINGS_DELAY: Duration = Duration::from_millis(200);
+
+fn get_json_with(base: &str, path: &str, timeout: Duration, passive: bool) -> Option<Value> {
+    let mut request = ureq::get(&format!("{base}{path}"));
+    if passive {
+        request = request.set("X-Burnrate-Passive", "1");
+    }
+    request.timeout(timeout).call().ok()?.into_json().ok()
+}
+
 pub(crate) fn get_json(base: &str, path: &str) -> Option<Value> {
-    ureq::get(&format!("{base}{path}"))
-        .timeout(Duration::from_secs(5))
-        .call()
-        .ok()?
-        .into_json()
-        .ok()
+    get_json_with(base, path, Duration::from_secs(5), false)
+}
+
+/// Status/stream reads by the shell are passive: they must not keep the scheduler's refresh loop
+/// awake while the window is closed or minimised.
+pub(crate) fn get_json_passive(base: &str, path: &str) -> Option<Value> {
+    get_json_with(base, path, Duration::from_secs(5), true)
 }
 
 pub(crate) fn post_json(base: &str, path: &str, body: &Value) -> Option<()> {
@@ -59,27 +73,57 @@ fn apply_settings(app: &AppHandle, state: &Arc<AppState>, settings: &Value) {
     }
 }
 
-fn refresh(app: &AppHandle, state: &Arc<AppState>) {
-    if let Some(settings) = get_json(&state.base, "/api/settings") {
-        apply_settings(app, state, &settings);
-    }
-    if let Some(status) = get_json(&state.base, "/api/status") {
+/// Seed the tray from the compact status. This is a passive read so it never marks a consumer;
+/// the SSE stream's first event carries the same cached snapshot.
+fn seed_tray(app: &AppHandle, state: &Arc<AppState>) {
+    if let Some(status) = get_json_passive(&state.base, "/api/status") {
         let percent = tray::percent_from_status(&status);
         state.set_percent(percent.unwrap_or(100) as f64);
         tray::update(app, percent);
     }
 }
 
+fn refresh(app: &AppHandle, state: &Arc<AppState>) {
+    if let Some(settings) = get_json(&state.base, "/api/settings") {
+        apply_settings(app, state, &settings);
+    }
+    seed_tray(app, state);
+}
+
+/// Fetch startup settings with a short bounded retry. Returns whether the server answered.
+fn load_settings(app: &AppHandle, state: &Arc<AppState>) -> bool {
+    for attempt in 0..STARTUP_SETTINGS_ATTEMPTS {
+        if state.shutdown.load(Ordering::Relaxed) {
+            return false;
+        }
+        // Short per-attempt timeout: a refused loopback connection returns at once, so the whole
+        // retry stays bounded even if the server thread is slow to bind its port.
+        if let Some(settings) = get_json_with(&state.base, "/api/settings", Duration::from_secs(1), false) {
+            apply_settings(app, state, &settings);
+            return true;
+        }
+        if attempt + 1 < STARTUP_SETTINGS_ATTEMPTS {
+            std::thread::sleep(STARTUP_SETTINGS_DELAY);
+        }
+    }
+    false
+}
+
 pub(crate) fn start(app: AppHandle, state: Arc<AppState>) {
     std::thread::Builder::new()
         .name("burnrate-stream".into())
         .spawn(move || {
+            // The server may not be listening yet. Retry briefly, then show a window even if settings
+            // never load: a refused connection must not leave the app running tray-only.
+            if !load_settings(&app, &state) {
+                crate::windows::open_main(&app, None);
+            }
+            seed_tray(&app, &state);
             let mut backoff = Duration::from_secs(1);
             loop {
                 if state.shutdown.load(Ordering::Relaxed) {
                     break;
                 }
-                refresh(&app, &state);
                 match follow_stream(&app, &state) {
                     Ok(()) => backoff = Duration::from_secs(1),
                     Err(error) => eprintln!("stream disconnected: {error}"),
@@ -87,6 +131,9 @@ pub(crate) fn start(app: AppHandle, state: Arc<AppState>) {
                 if state.shutdown.load(Ordering::Relaxed) {
                     break;
                 }
+                // Settings may have changed while the stream was away; `apply_settings` honours
+                // `startMinimized` and never opens a second window.
+                refresh(&app, &state);
                 std::thread::sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -109,6 +156,7 @@ fn stream_agent() -> ureq::Agent {
 fn follow_stream(app: &AppHandle, state: &Arc<AppState>) -> Result<(), String> {
     let response = stream_agent()
         .get(&state.url("/api/stream"))
+        .set("X-Burnrate-Passive", "1")
         .call()
         .map_err(|e| e.to_string())?;
     let mut reader = response.into_reader();

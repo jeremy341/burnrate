@@ -35,7 +35,7 @@ export function useMessages(): MFunctionType {
 }
 
 export function useGT(): (message: string, values?: MessageValues) => string {
-  return (message, values) => format(message, values);
+  return mFallback;
 }
 
 export function T({ children }: { children?: ReactNode; context?: string }): ReactNode {

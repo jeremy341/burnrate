@@ -1,12 +1,14 @@
 //! Background refresh loop: reads limits at the configured interval while a consumer is connected
 //! (SSE client, a recent `/api/limits` request, or notifications enabled in settings) and feeds
 //! `history::on_snapshot`, `alerts::on_snapshot` and the hub. Idle = parked on a condition variable.
-//! Owned by the scheduler-hub-status package. Contract: docs/CONTRACTS.md, "Scheduler".
+//! The raw `LimitsReport` and the compact status share one 30 s cache, so `/api/limits`, `/api/status`
+//! and the loop never run a second concurrent probe. Owned by the scheduler-hub-status package.
+//! Contract: docs/CONTRACTS.md, "Scheduler".
 
 use crate::{hub, State};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,6 +44,10 @@ struct Scheduler {
 /// Set once by `start` from `lib.rs::run`. All public accessors read through this.
 static ACTIVE: OnceLock<Arc<Scheduler>> = OnceLock::new();
 
+/// Interactive SSE streams currently attached. The hub counts every subscriber, but the shell's
+/// stream is passive (registered by `status_api`) and must not keep the scheduler awake on its own.
+static ACTIVE_STREAMS: AtomicUsize = AtomicUsize::new(0);
+
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -68,11 +74,12 @@ fn refresh_interval(state: &State) -> Duration {
 }
 
 impl Scheduler {
-    /// A consumer is active if an SSE client is attached, notifications are enabled,
-    /// or `/api/limits` was requested recently (within three intervals).
+    /// A consumer is active if an interactive SSE client is attached, notifications are enabled,
+    /// or `/api/limits` was requested recently (within three intervals). The shell's stream and
+    /// status reads are passive so a minimised shell cannot keep the scheduler awake forever.
     fn consumer_active(&self, interval: Duration) -> bool {
         let raw = raw_settings(&self.state);
-        if hub::subscriber_count() > 0 {
+        if ACTIVE_STREAMS.load(Ordering::Relaxed) > 0 {
             return true;
         }
         if setting_bool(&raw, &["notifications", "enabled"], false) {
@@ -88,36 +95,45 @@ impl Scheduler {
         false
     }
 
-    /// Refresh the report if the cache is stale, otherwise return the cached compact status.
-    /// Concurrent callers are serialised by `refresh_guard` and therefore share a single probe.
-    fn refresh(&self) -> Value {
-        let compact = {
-            let _guard = self.refresh_guard.lock().unwrap_or_else(|e| e.into_inner());
-            {
-                let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                if let (Some(cached), Some(at)) = (cache.compact.as_ref(), cache.built_at) {
+    /// Return the raw `LimitsReport` and its compact status from one shared probe. A fresh cache
+    /// (or `force`) decides whether to probe; `refresh_guard` serialises concurrent callers so
+    /// `/api/limits`, `/api/status` and the scheduler never start a second network refresh.
+    fn refresh_data(&self, force: bool) -> (Value, Value) {
+        let _guard = self.refresh_guard.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if !force {
+                if let (Some(report), Some(compact), Some(at)) =
+                    (cache.report.as_ref(), cache.compact.as_ref(), cache.built_at)
+                {
                     if at.elapsed() < CACHE_TTL {
-                        return cached.clone();
+                        return (report.clone(), compact.clone());
                     }
                 }
             }
+        }
 
-            // `limits_report` is crate-private in lib.rs; a child module may call it directly.
-            let report = crate::limits_report(&self.state);
-            let compact = build_compact_status(&report, Utc::now());
+        // `limits_report` is crate-private in lib.rs; a child module may call it directly.
+        let report = crate::limits_report(&self.state);
+        let compact = build_compact_status(&report, Utc::now());
 
-            // Hooks take the raw report. Both are stubs until their packages land.
-            crate::history::on_snapshot(&self.state, &report);
-            crate::alerts::on_snapshot(&self.state, &report);
+        // Hooks take the raw report. Both are stubs until their packages land.
+        crate::history::on_snapshot(&self.state, &report);
+        crate::alerts::on_snapshot(&self.state, &report);
 
+        {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.report = Some(report);
+            cache.report = Some(report.clone());
             cache.compact = Some(compact.clone());
             cache.built_at = Some(Instant::now());
-            compact
-        };
+        }
         hub::publish("snapshot", compact.clone());
-        compact
+        (report, compact)
+    }
+
+    /// Refresh the compact status if the cache is stale, otherwise return the cached one.
+    fn refresh(&self) -> Value {
+        self.refresh_data(false).1
     }
 }
 
@@ -167,9 +183,32 @@ pub fn note_limits_request() {
     hub::wake();
 }
 
-/// Generic activity signal; `/api/status` polling is also a consumer signal.
+/// Register an interactive SSE stream (as opposed to the shell's passive status stream). Paired
+/// open/close calls from `status_api::serve_stream` keep `consumer_active` honest; a passive stream
+/// never calls this, so it cannot pin the scheduler while the app is in the tray.
+pub fn note_stream(open: bool) {
+    if open {
+        ACTIVE_STREAMS.fetch_add(1, Ordering::AcqRel);
+        hub::wake();
+    } else {
+        let _ = ACTIVE_STREAMS.try_update(Ordering::AcqRel, Ordering::Relaxed, |n| n.checked_sub(1));
+        hub::wake();
+    }
+}
+
+/// Generic activity signal from an interactive client. Passive shell status reads must not call this.
 pub fn note_activity() {
     note_limits_request();
+}
+
+/// Raw `LimitsReport` for `GET /api/limits`, served from the same 30 s cache as compact status so
+/// repeated reads share one probe. `force` bypasses it for an explicit Refresh. Without a running
+/// scheduler (tests/embedding) this falls back to a direct probe with `state`.
+pub fn limits_report_cached(force: bool, state: &crate::State) -> Value {
+    match ACTIVE.get() {
+        Some(scheduler) => scheduler.refresh_data(force).0,
+        None => crate::limits_report(state),
+    }
 }
 
 /// Compact status for `GET /api/status`. Uses the shared cache (one probe per TTL).

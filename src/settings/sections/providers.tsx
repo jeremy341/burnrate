@@ -1,5 +1,5 @@
 import { ExternalLinkIcon, PlusIcon, TrashIcon } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useProviders } from "~/api";
 import { deleteUserDefinition, listDefinitions, type DefinitionInfo } from "~/api/defs";
@@ -251,6 +251,10 @@ export function visibleSourceIds(
 function ProvidersSettings() {
   const gt = useGT();
   const providers = useProviders();
+  const sourceReloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (sourceReloadTimer.current !== null) clearTimeout(sourceReloadTimer.current);
+  }, []);
   const hidden = useSettings((settings) => settings.providers.hidden);
   const claudeOAuthProbe = useSettings((settings) => settings.providers.claudeOAuthProbe);
   const customDefinitions = useSettings((settings) => settings.providers.customDefinitions);
@@ -353,7 +357,11 @@ function ProvidersSettings() {
   const setSourcePaths = (id: SourceId, paths: string[]) => {
     apply({ providers: { sources: { [id]: paths } } });
     // The server re-checks the folders on the next listing; ask for it so "not found" updates.
-    window.setTimeout(() => providers.reload(), 400);
+    if (sourceReloadTimer.current !== null) clearTimeout(sourceReloadTimer.current);
+    sourceReloadTimer.current = setTimeout(() => {
+      sourceReloadTimer.current = null;
+      providers.reload();
+    }, 400);
   };
 
   /** What the server says about the folders configured for one agent (absent on older servers). */

@@ -13,7 +13,7 @@ mod scan;
 mod tests;
 
 use crate::pricing::{self, RateTable};
-use crate::readers::{self, Source};
+use crate::readers::{self, FileInfo, Source};
 use crate::settings::Settings;
 use crate::store::{self, FileEntry, Interner, C_SESSION, STRIDE};
 use serde_json::{json, Value};
@@ -34,9 +34,12 @@ const SEP: char = '\0';
 /// Providers that repeat a message key (Claude per content block, Antigravity per retry): count it once at the maximum of each channel.
 const MAX_MERGE: [&str; 2] = ["claude", "antigravity"];
 /// A request that finds the data older than this starts a background rescan (it still answers at once).
-const REVALIDATE_AFTER_MS: f64 = 5_000.0;
+/// Listing every reader's tree is expensive, so revalidation is deliberately not a 5 s affair.
+const REVALIDATE_AFTER_MS: f64 = 60_000.0;
 const MAX_MEMO: usize = 24;
 const PERSISTED_SUMMARIES: usize = 12;
+/// Only the most recently used windows are recomputed after a scan; the rest are rebuilt on demand.
+const PREWARM_WINDOWS: usize = 3;
 const SUMMARY_FILE: &str = "usage-summary-cache.json";
 const SUMMARY_FILE_VERSION: u32 = 2;
 
@@ -65,7 +68,8 @@ fn warn_bad_time_zone(name: &str) {
 /// with the cache, never copied) and the figures the sources list reports.
 #[derive(Default)]
 pub(crate) struct ProviderView {
-    keys: Vec<String>,
+    /// Shared with the scan plan so a per-batch rebuild only bumps refcounts, not string buffers.
+    keys: Vec<Arc<str>>,
     rows: Vec<Arc<Vec<f64>>>,
     /// True once a listing of this provider has completed in this process.
     listed: bool,
@@ -74,6 +78,8 @@ pub(crate) struct ProviderView {
     scanned_files: usize,
     malformed: u32,
     distinct_sessions: usize,
+    /// Running session ids for honest intermediate counts between the expensive final recount.
+    session_ids: HashSet<u64>,
 }
 
 impl ProviderView {
@@ -144,6 +150,12 @@ pub struct SummaryInput {
     pub until_time: Option<f64>,
 }
 
+/// One reader's last listing. Only reused while its fingerprint stays conclusive and unchanged.
+pub(crate) struct CachedListing {
+    pub fingerprint: u64,
+    pub files: Vec<FileInfo>,
+}
+
 pub(crate) struct Shared {
     data_dir: PathBuf,
     readers: Vec<Box<dyn Source>>,
@@ -152,9 +164,11 @@ pub(crate) struct Shared {
     inner: Mutex<Inner>,
     progress: Mutex<Progress>,
     memo: Mutex<Memo>,
+    listings: Mutex<Vec<Option<CachedListing>>>,
     scanning: AtomicBool,
     pricing_refreshing: AtomicBool,
     generation: AtomicU64,
+    last_prewarm_generation: AtomicU64,
     /// The scan cache was missing or unusable at start, so only a persisted summary can be shown at once.
     cold_start: bool,
 }
@@ -415,23 +429,33 @@ impl Shared {
         memo.entries.insert(key, MemoEntry { input: input.clone(), settings: Some(settings.clone()), generation, value, used });
     }
 
-    /// Recompute every remembered window against the freshly published rows and persist the latest ones,
-    /// so switching window is a memo hit and a restart can show the last answer at once.
+    /// Recompute the most recently used remembered windows against freshly published rows and persist
+    /// the latest ones, so switching window is a memo hit and a restart shows an answer at once.
+    /// A scan that changed nothing leaves both the memos and the persisted file alone.
     fn prewarm_and_persist(&self) {
-        let jobs: Vec<(String, SummaryInput, Settings)> = self
+        let generation = self.generation.load(Ordering::Acquire);
+        if generation == self.last_prewarm_generation.load(Ordering::Acquire) {
+            return;
+        }
+        let mut jobs: Vec<(u64, String, SummaryInput, Settings)> = self
             .memo_lock()
             .entries
             .iter()
-            .filter_map(|(k, e)| e.settings.clone().map(|s| (k.clone(), e.input.clone(), s)))
+            .filter_map(|(k, e)| e.settings.as_ref().map(|s| (e.used, k.clone(), e.input.clone(), s.clone())))
             .collect();
-        for (key, input, settings) in jobs {
-            let (value, generation) = {
+        // Recomputing every remembered window after each scan is quadratic in practice; the most
+        // recently used ones are the windows a user can flip back to immediately.
+        jobs.sort_by_key(|(used, _, _, _)| std::cmp::Reverse(*used));
+        jobs.truncate(PREWARM_WINDOWS);
+        for (_, key, input, settings) in jobs {
+            let (value, built_at) = {
                 let inner = self.lock();
                 (aggregate::compute(&inner, &self.providers, &self.dirs, &input, &settings), inner.generation)
             };
-            self.remember(key, &input, &settings, generation, value);
+            self.remember(key, &input, &settings, built_at, value);
         }
         self.persist_summaries();
+        self.last_prewarm_generation.store(generation, Ordering::Release);
     }
 
     fn persist_summaries(&self) {
@@ -543,7 +567,7 @@ impl Engine {
         let mut views: Vec<ProviderView> = providers.iter().map(|_| ProviderView::default()).collect();
         for (index, provider) in providers.iter().enumerate() {
             let prefix = format!("{provider}{SEP}");
-            let mut keys: Vec<String> = cache.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+            let mut keys: Vec<Arc<str>> = cache.keys().filter(|k| k.starts_with(&prefix)).map(|k| Arc::from(k.as_str())).collect();
             keys.sort();
             views[index].keys = keys;
         }
@@ -556,6 +580,7 @@ impl Engine {
             providers: providers.iter().map(|id| ProviderProgress { id, files_done: 0, files_total: 0, state: "pending" }).collect(),
             ..Progress::default()
         };
+        let listings = Mutex::new(providers.iter().map(|_| None).collect());
         let shared = Arc::new(Shared {
             data_dir,
             readers,
@@ -564,18 +589,15 @@ impl Engine {
             inner: Mutex::new(inner),
             progress: Mutex::new(progress),
             memo: Mutex::new(Memo::default()),
+            listings,
             scanning: AtomicBool::new(false),
             pricing_refreshing: AtomicBool::new(false),
             generation: AtomicU64::new(generation),
+            last_prewarm_generation: AtomicU64::new(0),
             cold_start,
         });
         shared.load_summaries();
         Engine { shared }
-    }
-
-    /// Begin the background transcript scan now (startup warm-up). Idempotent; never blocks.
-    pub fn start_scan(&self) {
-        self.shared.kick();
     }
 
     /// Answer from whatever is published right now and revalidate in the background. Never waits for a scan.

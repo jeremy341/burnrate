@@ -3,8 +3,6 @@
  * do not have to change. The three legacy fields map onto their v2 homes:
  *   theme -> appearance.themeMode, timestampFormat/hideSensitive -> general.*
  */
-import { useMemo } from "react";
-
 import type { SettingsPatch } from "~/settings/schema";
 import {
   clearSettingsError,
@@ -49,14 +47,12 @@ export function updateSettings(patch: PrimarySettingsPatch): Promise<void> {
 
 /** The legacy `usePrimarySettings` shape, backed by the v2 store. */
 export function usePrimarySettings<T = AppSettings>(select?: (settings: AppSettings) => T): T {
-  const settings = useSettings();
-  const legacy = useMemo<AppSettings>(
-    () => ({
+  return useSettings((settings) => {
+    const legacy: AppSettings = {
       theme: settings.appearance.themeMode,
       timestampFormat: settings.general.timestampFormat,
       hideSensitive: settings.general.hideSensitive,
-    }),
-    [settings.appearance.themeMode, settings.general.timestampFormat, settings.general.hideSensitive],
-  );
-  return (select ? select(legacy) : legacy) as T;
+    };
+    return (select ? select(legacy) : legacy) as T;
+  });
 }

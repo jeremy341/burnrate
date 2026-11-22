@@ -39,9 +39,45 @@ const MAX_POINTS: usize = 500;
 const SAMPLE_INTERVAL_MIN: u32 = 15;
 const CHANGE_THRESHOLD_X100: i32 = 50;
 
-/// Serialises all file access inside this process. Instances are otherwise stateless: they reload
-/// from disk on every public call, so there is no stale in-memory state to get out of sync.
-static IO_LOCK: Mutex<()> = Mutex::new(());
+/// Keeps one validated Store in memory. The fingerprint is the file's length and modification
+/// time: a change made outside this process forces a reload on the next call, while our own writes
+/// adopt the new fingerprint so a snapshot/GET pair does not re-read and CRC the whole log.
+struct Cached {
+    state: (u64, u128),
+    store: Store,
+}
+
+/// Serialises all file access and guards the cached Store.
+static IO: Mutex<Option<Cached>> = Mutex::new(None);
+
+fn file_state(path: &Path) -> (u64, u128) {
+    fs::metadata(path)
+        .map(|m| {
+            let modified = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            (m.len(), modified)
+        })
+        .unwrap_or((0, 0))
+}
+
+fn with_store<R>(write: bool, f: impl FnOnce(&mut Store) -> R) -> R {
+    let path = history_file();
+    let mut guard = IO.lock().unwrap_or_else(|e| e.into_inner());
+    let state = file_state(&path);
+    if guard.as_ref().map_or(true, |cached| cached.state != state) {
+        let store = Store::load(&path);
+        *guard = Some(Cached { state, store });
+    }
+    let cached = guard.as_mut().expect("cache populated above");
+    let result = f(&mut cached.store);
+    if write {
+        cached.state = file_state(&path);
+    }
+    result
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DiskSample {
@@ -85,6 +121,11 @@ struct Store {
     written_interns: HashSet<u32>,
     next_id: u32,
     samples: Vec<DiskSample>,
+    /// Last stored (ts_minute, value) per (account, window), maintained on append so selecting new
+    /// samples on a refresh never rescans the whole log.
+    last_by_key: HashMap<(u32, u32), (u32, u16)>,
+    /// Oldest sample timestamp, for an O(1) retention-sweep check.
+    min_ts: Option<u32>,
     /// Byte offset just past the last valid frame; used to trim a corrupt tail before appending.
     valid_end: u64,
     corrupt_tail: bool,
@@ -128,6 +169,8 @@ impl Store {
             written_interns: HashSet::new(),
             next_id: 1,
             samples: Vec::new(),
+            last_by_key: HashMap::new(),
+            min_ts: None,
             valid_end: 0,
             corrupt_tail: false,
             header_ok: false,
@@ -210,7 +253,7 @@ impl Store {
                     if !self.accounts.contains_key(&acct) || !self.windows.contains_key(&win) || val > 10_000 {
                         return false;
                     }
-                    self.samples.push(DiskSample { ts_min, acct, win, val });
+                    self.note_sample(DiskSample { ts_min, acct, win, val });
                 }
                 true
             }
@@ -240,24 +283,32 @@ impl Store {
         id
     }
 
-    /// Last stored (ts_minute, value) per (account, window). Samples are chronological, so the
-    /// last one wins. Used for the "changed by >= 0.5 or every 15 minutes" sampling rule.
-    fn last_by_key(&self) -> HashMap<(u32, u32), (u32, u16)> {
-        let mut out = HashMap::new();
-        for s in &self.samples {
-            out.insert((s.acct, s.win), (s.ts_min, s.val));
+    fn index_sample(&mut self, s: &DiskSample) {
+        self.last_by_key.insert((s.acct, s.win), (s.ts_min, s.val));
+        self.min_ts = Some(self.min_ts.map_or(s.ts_min, |m| m.min(s.ts_min)));
+    }
+
+    fn note_sample(&mut self, s: DiskSample) {
+        self.samples.push(s);
+        self.index_sample(&s);
+    }
+
+    fn rebuild_indexes(&mut self) {
+        self.last_by_key.clear();
+        self.min_ts = None;
+        for i in 0..self.samples.len() {
+            let s = self.samples[i];
+            self.index_sample(&s);
         }
-        out
     }
 
     fn select_new(&self, batch: &[NewSample]) -> Vec<NewSample> {
-        let last = self.last_by_key();
         batch
             .iter()
             .filter(|s| {
                 let Some(&a) = self.acct_by_name.get(&s.account) else { return true };
                 let Some(&w) = self.win_by_name.get(&s.window) else { return true };
-                match last.get(&(a, w)) {
+                match self.last_by_key.get(&(a, w)) {
                     None => true,
                     Some((ts, val)) => {
                         s.ts_min.saturating_sub(*ts) >= SAMPLE_INTERVAL_MIN
@@ -289,7 +340,9 @@ impl Store {
             // A bad tail means earlier frames may still be valid but cannot simply be kept: the
             // frames we are about to write could refer to intern records that only existed in the
             // tail we are about to drop. Rebuild the whole file from the valid in-memory state.
-            self.samples.extend(resolved);
+            for s in resolved {
+                self.note_sample(s);
+            }
             return self.rewrite();
         }
 
@@ -331,7 +384,9 @@ impl Store {
         for (id, _, _) in &new_interns {
             self.written_interns.insert(*id);
         }
-        self.samples.extend(resolved);
+        for s in resolved {
+            self.note_sample(s);
+        }
         true
     }
 
@@ -397,12 +452,13 @@ impl Store {
     }
 
     fn needs_sweep(&self, cutoff_min: u32) -> bool {
-        self.samples.iter().any(|s| s.ts_min < cutoff_min)
+        self.min_ts.is_some_and(|ts| ts < cutoff_min)
     }
 
     /// Retention sweep: drop samples older than `cutoff_min` and reclaim their space.
     fn sweep(&mut self, cutoff_min: u32) -> bool {
         self.samples.retain(|s| s.ts_min >= cutoff_min);
+        self.rebuild_indexes();
         let accts: HashSet<u32> = self.samples.iter().map(|s| s.acct).collect();
         let wins: HashSet<u32> = self.samples.iter().map(|s| s.win).collect();
         self.accounts.retain(|id, _| accts.contains(id));
@@ -414,6 +470,8 @@ impl Store {
 
     fn clear(&mut self) -> bool {
         self.samples.clear();
+        self.last_by_key.clear();
+        self.min_ts = None;
         self.accounts.clear();
         self.windows.clear();
         self.acct_by_name.clear();
@@ -424,27 +482,29 @@ impl Store {
     }
 
     fn query(&self, q: &Query) -> Vec<Series> {
-        let mut groups: BTreeMap<(String, String), Vec<(i64, f64)>> = BTreeMap::new();
+        let mut groups: BTreeMap<(u32, u32), Vec<(i64, f64)>> = BTreeMap::new();
         for s in &self.samples {
             let ts_ms = s.ts_min as i64 * 60_000;
             if ts_ms < q.since_ms || ts_ms > q.until_ms {
                 continue;
             }
-            let (Some(account), Some(window)) = (self.accounts.get(&s.acct), self.windows.get(&s.win)) else { continue };
-            if q.account.as_ref().is_some_and(|a| a != account) || q.window.as_ref().is_some_and(|w| w != window) {
+            if !self.accounts.contains_key(&s.acct) || !self.windows.contains_key(&s.win) {
                 continue;
             }
-            groups
-                .entry((account.clone(), window.clone()))
-                .or_default()
-                .push((ts_ms, s.val as f64 / 100.0));
+            if q.account.as_ref().is_some_and(|a| self.accounts.get(&s.acct).is_some_and(|n| n != a)) {
+                continue;
+            }
+            if q.window.as_ref().is_some_and(|w| self.windows.get(&s.win).is_some_and(|n| n != w)) {
+                continue;
+            }
+            groups.entry((s.acct, s.win)).or_default().push((ts_ms, s.val as f64 / 100.0));
         }
         groups
             .into_iter()
-            .map(|((account, window), points)| Series {
-                account_id: account,
-                window_id: window,
-                points: downsample(&points, q.step_secs, MAX_POINTS),
+            .filter_map(|((acct, win), points)| {
+                let account = self.accounts.get(&acct)?.clone();
+                let window = self.windows.get(&win)?.clone();
+                Some(Series { account_id: account, window_id: window, points: downsample(&points, q.step_secs, MAX_POINTS) })
             })
             .collect()
     }
@@ -518,23 +578,23 @@ fn cutoff_min(now_min: u32, days: u32) -> u32 {
 pub fn on_snapshot(state: &State, snapshot: &Value) {
     let days = history_days(state);
     let now = now_minutes();
-    let _guard = IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut store = Store::load(&history_file());
-    if days == 0 {
-        if !store.samples.is_empty() {
-            store.clear();
-        }
-        return;
-    }
-    let cutoff = cutoff_min(now, days);
-    if store.needs_sweep(cutoff) {
-        store.sweep(cutoff);
-    }
     let batch = extract_samples(snapshot, now);
-    let fresh = store.select_new(&batch);
-    if !fresh.is_empty() {
-        store.append(&fresh);
-    }
+    with_store(true, |store| {
+        if days == 0 {
+            if !store.samples.is_empty() {
+                store.clear();
+            }
+            return;
+        }
+        let cutoff = cutoff_min(now, days);
+        if store.needs_sweep(cutoff) {
+            store.sweep(cutoff);
+        }
+        let fresh = store.select_new(&batch);
+        if !fresh.is_empty() {
+            store.append(&fresh); // keeps flush/sync_data for crash safety
+        }
+    });
 }
 
 /// Reads history, applying filters and downsampling. Also performs the retention sweep so the
@@ -543,19 +603,20 @@ pub fn read(state: &State, q: &Query) -> Vec<Series> {
     if history_days(state) == 0 {
         return Vec::new();
     }
-    let _guard = IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut store = Store::load(&history_file());
     let cutoff = cutoff_min(now_minutes(), history_days(state));
-    if store.needs_sweep(cutoff) {
-        store.sweep(cutoff);
-    }
-    store.query(q)
+    with_store(true, |store| {
+        if store.needs_sweep(cutoff) {
+            store.sweep(cutoff);
+        }
+        store.query(q)
+    })
 }
 
 /// Clears the whole history store.
 pub fn clear() {
-    let _guard = IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    Store::load(&history_file()).clear();
+    with_store(true, |store| {
+        store.clear();
+    });
 }
 
 fn extract_samples(snapshot: &Value, now_min: u32) -> Vec<NewSample> {
@@ -660,6 +721,22 @@ mod tests {
     }
 
     #[test]
+    fn incremental_indexes_match_samples_through_append_and_sweep() {
+        let dir = temp_dir();
+        let mut store = Store::load(&dir.join("history.bin"));
+        assert!(store.append(&[sample("a", "w", 100, 10.0), sample("b", "w", 90, 20.0), sample("a", "w", 115, 11.0)]));
+        assert_eq!(store.min_ts, Some(90));
+        let a = store.acct_by_name["a"];
+        let w = store.win_by_name["w"];
+        assert_eq!(store.last_by_key.get(&(a, w)), Some(&(115, 1100)));
+        assert!(store.sweep(100));
+        assert_eq!(store.min_ts, Some(100));
+        assert_eq!(store.last_by_key.len(), 1);
+        assert_eq!(store.last_by_key.get(&(a, w)), Some(&(115, 1100)));
+        cleanup(&dir);
+    }
+
+    #[test]
     fn sampling_rule_change_or_interval() {
         let dir = temp_dir();
         let mut store = Store::load(&dir.join("history.bin"));
@@ -741,7 +818,7 @@ mod tests {
                         let val = ((slot * 7 + account as u32 * 3) % 10_001) as u16;
                         let acct = store.intern_account(&format!("account-{account}"));
                         let win = store.intern_window(window);
-                        store.samples.push(DiskSample { ts_min: ts, acct, win, val });
+                        store.note_sample(DiskSample { ts_min: ts, acct, win, val });
                     }
                 }
             }

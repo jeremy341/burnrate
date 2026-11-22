@@ -1,6 +1,7 @@
 use crate::types::Record;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -130,6 +131,7 @@ pub fn unpack(rows: &[f64], i: usize, strings: &Interner) -> Record {
     }
 }
 
+#[derive(Clone)]
 pub struct FileEntry {
     pub size: f64,
     pub mtime_ms: f64,
@@ -166,28 +168,98 @@ pub fn save(path: &Path, version: u32, strings: &Interner, files: &HashMap<Strin
 }
 
 pub fn load(path: &Path, version: u32) -> Option<(Interner, HashMap<String, FileEntry>)> {
-    let buf = fs::read(path).ok()?;
-    if buf.len() < 4 {
+    let file = fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len() as usize;
+    if file_len < 4 {
         return None;
     }
-    let header_len = u32::from_le_bytes(buf[0..4].try_into().ok()?) as usize;
-    let header: serde_json::Value = serde_json::from_slice(buf.get(4..4 + header_len)?).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut len_bytes = [0u8; 4];
+    reader.read_exact(&mut len_bytes).ok()?;
+    let header_len = u32::from_le_bytes(len_bytes) as usize;
+    // A corrupt length must not make us allocate beyond what the file actually holds.
+    if 4_usize.saturating_add(header_len) > file_len {
+        return None;
+    }
+    let mut header_bytes = vec![0u8; header_len];
+    reader.read_exact(&mut header_bytes).ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes).ok()?;
     if header["version"].as_u64()? as u32 != version {
         return None;
     }
     let padding = (8 - ((4 + header_len) % 8)) % 8;
-    let mut offset = 4 + header_len + padding;
+    let mut pad_bytes = vec![0u8; padding];
+    reader.read_exact(&mut pad_bytes).ok()?;
     let strings: Vec<String> = header["strings"].as_array()?.iter().map(|s| s.as_str().unwrap_or("").to_string()).collect();
+    let header_end = 4_usize.saturating_add(header_len).saturating_add(padding);
+    let max_values = file_len.saturating_sub(header_end) / 8;
     let mut files = HashMap::new();
     for f in header["files"].as_array()? {
-        let count = f["rowCount"].as_u64()? as usize * STRIDE;
-        let bytes = buf.get(offset..offset + count * 8)?;
+        let count = (f["rowCount"].as_u64()? as usize).checked_mul(STRIDE)?;
+        if count > max_values {
+            return None;
+        }
+        let mut bytes = vec![0u8; count * 8];
+        reader.read_exact(&mut bytes).ok()?;
         let rows: Arc<Vec<f64>> = Arc::new(bytes.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect());
-        offset += count * 8;
         files.insert(
             f["key"].as_str()?.to_string(),
             FileEntry { size: f["size"].as_f64()?, mtime_ms: f["mtimeMs"].as_f64()?, malformed: f["malformed"].as_u64()? as u32, rows },
         );
     }
     Some((Interner::from_strings(strings), files))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("burnrate-store-{}-{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("cache.bin")
+    }
+
+    #[test]
+    fn save_load_round_trips_rows_and_layout() {
+        let path = temp_path("roundtrip");
+        let mut strings = Interner::default();
+        let rec = Record { uncached: 7.0, cached: 3.0, ..Record::new("test", 123.0, "m", "s") };
+        let rows = Arc::new(pack(&[rec], &mut strings));
+        let mut files = HashMap::new();
+        files.insert("test\0a".to_string(), FileEntry { size: 10.0, mtime_ms: 20.0, malformed: 1, rows: rows.clone() });
+        save(&path, 3, &strings, &files);
+        let raw = fs::read(&path).unwrap();
+        let header_len = u32::from_le_bytes(raw[0..4].try_into().unwrap()) as usize;
+        assert_eq!((8 - ((4 + header_len) % 8)) % 8 + 4 + header_len + 14 * 8, raw.len());
+
+        let (loaded_strings, loaded) = load(&path, 3).unwrap();
+        assert_eq!(loaded_strings.strings, strings.strings);
+        let entry = &loaded["test\0a"];
+        assert_eq!((entry.size, entry.mtime_ms, entry.malformed), (10.0, 20.0, 1));
+        // Compare bits, not floats: the cache round-trips NaN payloads verbatim, and NaN != NaN.
+        assert_eq!(
+            entry.rows.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            rows.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        assert!(load(&path, 2).is_none(), "a version mismatch must drop the cache");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn load_returns_none_on_short_read() {
+        let path = temp_path("short");
+        let mut strings = Interner::default();
+        let rec = Record::new("test", 1.0, "m", "s");
+        let rows = Arc::new(pack(&[rec], &mut strings));
+        let mut files = HashMap::new();
+        files.insert("test\0a".to_string(), FileEntry { size: 1.0, mtime_ms: 1.0, malformed: 0, rows });
+        save(&path, 3, &strings, &files);
+        let mut raw = fs::read(&path).unwrap();
+        raw.truncate(raw.len() - 1);
+        fs::write(&path, raw).unwrap();
+        assert!(load(&path, 3).is_none());
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 }

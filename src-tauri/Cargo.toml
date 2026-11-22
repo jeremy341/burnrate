@@ -22,8 +22,9 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# SSE client for /api/stream and the small settings/status JSON calls.
-ureq = { version = "2", features = ["json"] }
+# SSE client for /api/stream and the small settings/status JSON calls. It only ever talks to
+# 127.0.0.1, so no TLS backend is needed; keep the dependency small.
+ureq = { version = "2", default-features = false, features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
 # Autostart uses the per-user Run key; no admin rights are requested.

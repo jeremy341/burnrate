@@ -15,12 +15,14 @@ pub mod vibe;
 
 use crate::types::{parse_ts_ms, str_of, token_count, ReadResult, Record};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct FileInfo {
     pub path: PathBuf,
     pub size: f64,
@@ -56,7 +58,10 @@ pub fn read_text(path: &Path, max_bytes: u64) -> Result<String, String> {
         return Err(format!("transcript too large: {} bytes", meta.len()));
     }
     let bytes = fs::read(path).map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -137,15 +142,39 @@ pub fn mtime_ms(meta: &fs::Metadata) -> f64 {
 }
 
 pub fn walk(root: &Path, accept: &dyn Fn(&str) -> bool, out: &mut Vec<FileInfo>) {
+    let mut visited = HashSet::new();
+    walk_inner(root, accept, out, &mut visited, 0);
+}
+
+fn walk_inner(root: &Path, accept: &dyn Fn(&str) -> bool, out: &mut Vec<FileInfo>, visited: &mut HashSet<PathBuf>, depth: u32) {
+    if depth > 32 {
+        return;
+    }
     let Ok(entries) = fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_dir() {
-            walk(&path, accept, out);
-        } else if path.file_name().and_then(|n| n.to_str()).is_some_and(accept) {
-            out.push(FileInfo { path, size: meta.len() as f64, mtime_ms: mtime_ms(&meta) });
+        let kind = entry.file_type().ok();
+        if kind.as_ref().is_some_and(|t| t.is_dir()) {
+            walk_dir(&path, accept, out, visited, depth);
+            continue;
         }
+        // `DirEntry::metadata` does not follow symlinks, so a symlinked directory needs an explicit check.
+        if kind.as_ref().is_some_and(|t| t.is_symlink()) && fs::metadata(&path).map_or(false, |m| m.is_dir()) {
+            walk_dir(&path, accept, out, visited, depth);
+            continue;
+        }
+        if !path.file_name().and_then(|n| n.to_str()).is_some_and(accept) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        out.push(FileInfo { path, size: meta.len() as f64, mtime_ms: mtime_ms(&meta) });
+    }
+}
+
+fn walk_dir(path: &Path, accept: &dyn Fn(&str) -> bool, out: &mut Vec<FileInfo>, visited: &mut HashSet<PathBuf>, depth: u32) {
+    let identity = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if visited.insert(identity) {
+        walk_inner(path, accept, out, visited, depth + 1);
     }
 }
 
@@ -420,6 +449,49 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn walk_tests_filename_before_statistics_and_descends_nested_dirs() {
+        let dir = temp_dir();
+        fs::create_dir_all(dir.join("nested").join("deeper")).unwrap();
+        fs::write(dir.join("nested").join("deeper").join("a.jsonl"), "x").unwrap();
+        fs::write(dir.join("nested").join("ignored.txt"), "x").unwrap();
+        fs::write(dir.join("top.jsonl"), "x").unwrap();
+        let mut out = Vec::new();
+        walk(&dir, &|n| n.ends_with(".jsonl"), &mut out);
+        let mut names: Vec<String> = out.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, vec!["a.jsonl", "top.jsonl"], "only accepted files, nested ones included");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_follows_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+        let dir = temp_dir();
+        let target = dir.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("a.jsonl"), "x").unwrap();
+        symlink(&target, dir.join("link")).unwrap();
+        let mut out = Vec::new();
+        walk(&dir, &|n| n.ends_with(".jsonl"), &mut out);
+        let names: Vec<String> = out.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().any(|n| n == "a.jsonl"), "the symlinked directory must be traversed");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_text_moves_valid_utf8_and_replaces_invalid_bytes() {
+        let dir = temp_dir();
+        let valid = dir.join("valid.txt");
+        let invalid = dir.join("invalid.txt");
+        fs::write(&valid, "héllo").unwrap();
+        fs::write(&invalid, [b'a', 0xff, b'b']).unwrap();
+        assert_eq!(read_text(&valid, 100).unwrap(), "héllo");
+        assert_eq!(read_text(&invalid, 100).unwrap(), "a\u{fffd}b");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

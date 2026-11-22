@@ -46,6 +46,7 @@ import {
   useCollapsedProviders,
 } from "./UsageLimitsCollapse";
 import { LimitsEmptyState } from "./UsageLimitsStates";
+import { useLimitsClockNow } from "./LimitsClock";
 import { accountLimitNotices, resetCreditLines } from "./usageLimitsAccountNotes";
 import {
   PaceIcon,
@@ -155,6 +156,41 @@ function restoreClock(window: LimitPoolMember["window"], restoresAt: string | un
   return { ...window, resetsAt: restoresAt };
 }
 
+function ResetTime({ window, fallbackNow }: { readonly window: LimitPoolMember["window"]; readonly fallbackNow: number }) {
+  const now = useLimitsClockNow(fallbackNow);
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+  const m = useMessages();
+  const resetsIn = formatResetsIn(window, now, m, "in");
+  if (!window.resetsAt) return null;
+  return <>{formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m)}{resetsIn ? ` · ${resetsIn}` : ""}</>;
+}
+
+function RefillBadge({ window, restoresAt, credits, fallbackNow, compact = false }: {
+  readonly window: LimitPoolMember["window"];
+  readonly restoresAt: string | undefined;
+  readonly credits: number;
+  readonly fallbackNow: number;
+  readonly compact?: boolean;
+}) {
+  const now = useLimitsClockNow(fallbackNow);
+  const m = useMessages();
+  const gt = useGT();
+  const resetsIn = formatResetsIn(restoreClock(window, restoresAt), now, m, "refill");
+  if (!resetsIn && !credits && !compact) return null;
+  return (
+    <span className={compact
+      ? "ms-auto flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground tabular-nums"
+      : "ms-auto flex min-w-0 items-center gap-1.5 overflow-hidden rounded-sm bg-background/85 px-1.5 py-0.5 text-2xs whitespace-nowrap text-foreground tabular-nums"}>
+      {resetsIn ?? ""}
+      {credits ? <>
+        {resetsIn ? <span aria-hidden className={compact ? undefined : "text-muted-foreground"}>·</span> : null}
+        <span aria-hidden className={cn("inline-flex items-center gap-0.5 font-semibold", compact && "text-foreground")}><TicketIcon className="size-3" aria-hidden />{credits}</span>
+        {compact ? <span className="sr-only">{gt("{count, plural, one {{count} reset credit banked} other {{count} reset credits banked}}", { count: credits })}</span> : null}
+      </> : null}
+    </span>
+  );
+}
+
 function SegmentPopover({
   account,
   window,
@@ -166,12 +202,10 @@ function SegmentPopover({
   readonly reset: LimitPoolWindow["resets"][number] | undefined;
   readonly now: number;
 }) {
-  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const gt = useGT();
   const m = useMessages();
   const remaining = remainingPercent(window);
   const timeLeft = paceRemainingPercent(window, now);
-  const resetsIn = formatResetsIn(window, now, m, "in");
   const where = account.sourceLabel;
   const creditLines = resetCreditLines(account.limits, now, m);
   return (
@@ -206,8 +240,7 @@ function SegmentPopover({
         <Row label={gt("Left", { $context: "remaining usage" })}>{remaining}%</Row>
         {window.resetsAt ? (
           <Row label={gt("Resets", { $context: "when the usage window resets" })}>
-            {formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m)}
-            {resetsIn ? ` · ${resetsIn}` : ""}
+            <ResetTime window={window} fallbackNow={now} />
           </Row>
         ) : null}
         {timeLeft !== null ? (
@@ -331,7 +364,6 @@ function SegmentTriggers({
   const refreshIntervalSec = useSettings((settings) => settings.usage.refreshIntervalSec);
   const freshness = limitFreshness(account.limits, now, refreshIntervalSec, m);
   const resetsIn = formatResetsIn(window, now, m);
-  const refillIn = formatResetsIn(restoreClock(window, restoresAt), now, m, "refill");
   const credits = account.limits.resetCredits?.availableCount ?? 0;
   const gt = useGT();
   const name =
@@ -434,24 +466,7 @@ function SegmentTriggers({
             </span>
           ) : null}
           {freshness ? <SegmentAge freshness={freshness} /> : null}
-          {refillIn || credits ? (
-            <span className="ms-auto flex min-w-0 items-center gap-1.5 overflow-hidden rounded-sm bg-background/85 px-1.5 py-0.5 text-2xs whitespace-nowrap text-foreground tabular-nums">
-              {refillIn ?? ""}
-              {credits ? (
-                <>
-                  {refillIn ? (
-                    <span aria-hidden className="text-muted-foreground">
-                      ·
-                    </span>
-                  ) : null}
-                  <span aria-hidden className="inline-flex items-center gap-0.5 font-semibold">
-                    <TicketIcon className="size-3" aria-hidden />
-                    {credits}
-                  </span>
-                </>
-              ) : null}
-            </span>
-          ) : null}
+          <RefillBadge window={window} restoresAt={restoresAt} credits={credits} fallbackNow={now} />
         </div>
       </PopoverTrigger>
       <LegendRow
@@ -493,8 +508,6 @@ function LegendRow({
   const popover = use(SegmentPopoverContext) ?? undefined;
   const { account, window } = payload;
   const remaining = remainingPercent(window);
-  const m = useMessages();
-  const resetsIn = formatResetsIn(restoreClock(window, restoresAt), now, m, "refill");
   const credits = account.limits.resetCredits?.availableCount ?? 0;
   const gt = useGT();
   return (
@@ -517,27 +530,7 @@ function LegendRow({
       <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
       <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
       {freshness ? <SegmentAge freshness={freshness} /> : null}
-      <span className="ms-auto flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground tabular-nums">
-        {resetsIn ?? ""}
-        {credits ? (
-          <>
-            {resetsIn ? <span aria-hidden>·</span> : null}
-            <span
-              aria-hidden
-              className="inline-flex items-center gap-0.5 font-semibold text-foreground"
-            >
-              <TicketIcon className="size-3" aria-hidden />
-              {credits}
-            </span>
-            <span className="sr-only">
-              {gt(
-                "{count, plural, one {{count} reset credit banked} other {{count} reset credits banked}}",
-                { count: credits },
-              )}
-            </span>
-          </>
-        ) : null}
-      </span>
+      <RefillBadge window={window} restoresAt={restoresAt} credits={credits} fallbackNow={now} compact />
     </PopoverTrigger>
   );
 }

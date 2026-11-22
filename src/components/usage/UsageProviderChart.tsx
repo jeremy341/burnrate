@@ -1,7 +1,7 @@
 import { ProviderInstanceIcon } from "~/t3-shims/ProviderInstanceIcon";
 import type { UsageProviderKind } from "~/contracts";
 import { T, useGT, useLocale, useMessages } from "~/t3-shims/gt-react";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { DailyTotals, HourlyTotals } from "~/shared/usageMerge";
 import {
@@ -603,7 +603,7 @@ function UsageChartPlot({
 }
 
 export function UsageProviderChart({
-  providers,
+  providers: inputProviders,
   loadingProviders = NONE_LOADING,
   days,
   daily,
@@ -619,27 +619,29 @@ export function UsageProviderChart({
   const locale = useLocale();
   const m = useMessages();
   const baseId = useId();
-  const { periods, byPeriod } = resolution === "hour"
+  const providerKey = JSON.stringify(inputProviders);
+  const loadingKey = JSON.stringify([...loadingProviders].sort());
+  const providers = useMemo(() => inputProviders, [providerKey]);
+  const stableLoadingProviders = useMemo(() => new Set(loadingProviders), [loadingKey]);
+  const { periods, byPeriod } = useMemo(() => resolution === "hour"
     ? hourlyChartData(hours, hourly, timeZone, referenceTime)
-    : { periods: days, byPeriod: new Map(daily.map((entry) => [entry.day, entry])) };
-  const { columns, scale, paths, stepX } = buildChart(
-    periods,
-    byPeriod,
-    metric,
-    providers,
-    loadingProviders,
+    : { periods: days, byPeriod: new Map(daily.map((entry) => [entry.day, entry])) },
+    [resolution, hours, hourly, timeZone, referenceTime, days, daily]);
+  const { columns, scale, paths, stepX } = useMemo(
+    () => buildChart(periods, byPeriod, metric, providers, stableLoadingProviders),
+    [periods, byPeriod, metric, providers, stableLoadingProviders],
   );
 
   const toY = (value: number) => valueToY(value, scale.max);
-  const format = metric === "tokens" ? formatTokens : (value: number) => formatUsd(value, locale);
-  const formatPeriod = (period: string) =>
+  const format = useCallback((value: number) => metric === "tokens" ? formatTokens(value) : formatUsd(value, locale), [metric, locale]);
+  const formatPeriod = useCallback((period: string) =>
     resolution === "hour"
       ? formatHourShort(period, timeZone, hour12, locale)
-      : formatDayShort(period, locale);
-  const formatTooltipPeriod = (period: string) =>
+      : formatDayShort(period, locale), [resolution, timeZone, hour12, locale]);
+  const formatTooltipPeriod = useCallback((period: string) =>
     resolution === "hour" && referenceTime !== undefined
       ? formatRelativeHourShort(period, referenceTime, timeZone, hour12, m, locale)
-      : formatPeriod(period);
+      : formatPeriod(period), [resolution, referenceTime, timeZone, hour12, m, locale, formatPeriod]);
   const chartName =
     resolution === "hour"
       ? metric === "tokens"
@@ -656,6 +658,46 @@ export function UsageProviderChart({
   const legend = [...providers].sort(
     (a, b) => PROVIDER_ORDER.indexOf(a) - PROVIDER_ORDER.indexOf(b),
   );
+
+  // Keep the wrapper: Firefox does not clip a caption via the table's own box.
+  const accessibleTable = useMemo(() => (
+      <div className="sr-only">
+        <table>
+          <caption>{chartName}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{resolution === "hour" ? gt("Hour") : gt("Day")}</th>
+              {providers.map((provider) => (
+                <th key={provider} scope="col">
+                  {PROVIDER_PRESENTATION[provider].label}
+                </th>
+              ))}
+              {providers.length > 1 ? (
+                <th scope="col">
+                  <T>Total</T>
+                </th>
+              ) : null}
+            </tr>
+          </thead>
+          <tbody>
+            {periods.map((period, index) => {
+              const column = columns[index];
+              return (
+                <tr key={period}>
+                  <th scope="row">{formatTooltipPeriod(period)}</th>
+                  {providers.map((provider) => (
+                    <td key={provider}>
+                      {format(column?.bands.find((band) => band.provider === provider)?.value ?? 0)}
+                    </td>
+                  ))}
+                  {providers.length > 1 ? <td>{format(column?.total ?? 0)}</td> : null}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+  ), [chartName, resolution, gt, providers, periods, columns, format, formatTooltipPeriod]);
 
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -776,44 +818,7 @@ export function UsageProviderChart({
         </ul>
       ) : null}
 
-      {/* The plot and its axes are hover-only; this carries the same figures for screen readers.
-          sr-only sits on a wrapper: Firefox does not clip a table's caption by the table's own box. */}
-      <div className="sr-only">
-        <table>
-          <caption>{chartName}</caption>
-          <thead>
-            <tr>
-              <th scope="col">{resolution === "hour" ? gt("Hour") : gt("Day")}</th>
-              {providers.map((provider) => (
-                <th key={provider} scope="col">
-                  {PROVIDER_PRESENTATION[provider].label}
-                </th>
-              ))}
-              {providers.length > 1 ? (
-                <th scope="col">
-                  <T>Total</T>
-                </th>
-              ) : null}
-            </tr>
-          </thead>
-          <tbody>
-            {periods.map((period, index) => {
-              const column = columns[index];
-              return (
-                <tr key={period}>
-                  <th scope="row">{formatTooltipPeriod(period)}</th>
-                  {providers.map((provider) => (
-                    <td key={provider}>
-                      {format(column?.bands.find((band) => band.provider === provider)?.value ?? 0)}
-                    </td>
-                  ))}
-                  {providers.length > 1 ? <td>{format(column?.total ?? 0)}</td> : null}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {accessibleTable}
     </div>
   );
 }
