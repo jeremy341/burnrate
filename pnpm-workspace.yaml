@@ -1,0 +1,4 @@
+# pnpm 11 reads build-script approvals from this file. `onlyBuiltDependencies` was removed;
+# esbuild needs its postinstall step for Vite and Vitest to run.
+allowBuilds:
+  esbuild: true

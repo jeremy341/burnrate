@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Burnrate
+GenericName=Usage Tracker
+Comment=See how fast you burn through your AI quotas
+Exec=burnrate %U
+Icon=org.burnrate.Burnrate
+MimeType=x-scheme-handler/burnrate;
+Terminal=false
+Categories=Utility;Development;
+Keywords=AI;usage;limits;quota;tokens;burnrate;
+StartupNotify=true

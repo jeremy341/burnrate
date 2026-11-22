@@ -1,0 +1,215 @@
+{
+  "baseCommit": "470ca63499293f7f680f8ad2e77381a6752f1348",
+  "files": [
+    {
+      "ours": "src/index.css",
+      "theirs": "apps/web/src/index.css",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/alert-dialog.tsx",
+      "theirs": "apps/web/src/components/ui/alert-dialog.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/alert.tsx",
+      "theirs": "apps/web/src/components/ui/alert.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/button.tsx",
+      "theirs": "apps/web/src/components/ui/button.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/ui/closing-positioner.tsx",
+      "theirs": "apps/web/src/components/ui/closing-positioner.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/dialog-styles.ts",
+      "theirs": "apps/web/src/components/ui/dialog-styles.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/ui/dialog.tsx",
+      "theirs": "apps/web/src/components/ui/dialog.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/ui/input.tsx",
+      "theirs": "apps/web/src/components/ui/input.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/label.tsx",
+      "theirs": "apps/web/src/components/ui/label.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/menu.tsx",
+      "theirs": "apps/web/src/components/ui/menu.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/popover.tsx",
+      "theirs": "apps/web/src/components/ui/popover.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/refresh-icon.tsx",
+      "theirs": "apps/web/src/components/ui/refresh-icon.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/scroll-area.tsx",
+      "theirs": "apps/web/src/components/ui/scroll-area.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/select.tsx",
+      "theirs": "apps/web/src/components/ui/select.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/skeleton.tsx",
+      "theirs": "apps/web/src/components/ui/skeleton.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/spinner.tsx",
+      "theirs": "apps/web/src/components/ui/spinner.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/ui/table.tsx",
+      "theirs": "apps/web/src/components/ui/table.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/toggle-group.tsx",
+      "theirs": "apps/web/src/components/ui/toggle-group.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/toggle.tsx",
+      "theirs": "apps/web/src/components/ui/toggle.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/ui/tooltip.tsx",
+      "theirs": "apps/web/src/components/ui/tooltip.tsx",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/components/usage/UsageLimits.tsx",
+      "theirs": "apps/web/src/components/usage/UsageLimits.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/UsageLimitsPooled.tsx",
+      "theirs": "apps/web/src/components/usage/UsageLimitsPooled.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/UsageModelDialog.tsx",
+      "theirs": "apps/web/src/components/usage/UsageModelDialog.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/UsagePage.tsx",
+      "theirs": "apps/web/src/components/usage/UsagePage.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/UsagePriceOverrides.tsx",
+      "theirs": "apps/web/src/components/usage/UsagePriceOverrides.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/UsageProviderChart.tsx",
+      "theirs": "apps/web/src/components/usage/UsageProviderChart.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/UsageShareBar.tsx",
+      "theirs": "apps/web/src/components/usage/UsageShareBar.tsx",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/usageBreakdown.ts",
+      "theirs": "apps/web/src/components/usage/usageBreakdown.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/usagePagePreferences.ts",
+      "theirs": "apps/web/src/components/usage/usagePagePreferences.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/usagePriceForm.ts",
+      "theirs": "apps/web/src/components/usage/usagePriceForm.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/usagePriceTable.ts",
+      "theirs": "apps/web/src/components/usage/usagePriceTable.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/usagePriceTargets.ts",
+      "theirs": "apps/web/src/components/usage/usagePriceTargets.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/usageProviders.ts",
+      "theirs": "apps/web/src/components/usage/usageProviders.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/components/usage/usageShortcuts.ts",
+      "theirs": "apps/web/src/components/usage/usageShortcuts.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/shared/usageFormat.ts",
+      "theirs": "packages/shared/src/usageFormat.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/shared/usageFormatCopy.ts",
+      "theirs": "packages/shared/src/usageFormatCopy.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/shared/usageLimits.ts",
+      "theirs": "packages/shared/src/usageLimits.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/shared/usageLimitsCopy.ts",
+      "theirs": "packages/shared/src/usageLimitsCopy.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/shared/usageMerge.ts",
+      "theirs": "packages/shared/src/usageMerge.ts",
+      "mode": "adapted"
+    },
+    {
+      "ours": "src/shared/themePalettes.ts",
+      "theirs": "packages/shared/src/themePalettes.ts",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/shared/themeCss.ts",
+      "theirs": "packages/shared/src/themeCss.ts",
+      "mode": "verbatim"
+    },
+    {
+      "ours": "src/shared/themePreview.ts",
+      "theirs": "packages/shared/src/themePreview.ts",
+      "mode": "adapted"
+    }
+  ]
+}

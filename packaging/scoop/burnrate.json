@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schema.json",
+  "version": "__VERSION__",
+  "description": "Local usage limits and burn-rate tracker for AI coding agents.",
+  "homepage": "https://github.com/__REPO__",
+  "license": "MIT",
+  "notes": "Run Burnrate from the Start Menu. The portable build needs Microsoft Edge WebView2 (preinstalled on Windows 10 and 11).",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/__REPO__/releases/download/v__VERSION__/Burnrate-__VERSION__-windows-x64.zip",
+      "hash": "__SHA256_WIN_ZIP__"
+    }
+  },
+  "bin": [["burnrate-server.exe", "burnrate-server"]],
+  "shortcuts": [["burnrate.exe", "Burnrate"]],
+  "checkver": {
+    "github": "https://github.com/__REPO__"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/__REPO__/releases/download/v$version/Burnrate-$version-windows-x64.zip"
+      }
+    },
+    "hash": {
+      "url": "$baseurl/SHA256SUMS",
+      "regex": "([a-fA-F0-9]{64})\\s+Burnrate-$version-windows-x64\\.zip"
+    }
+  }
+}

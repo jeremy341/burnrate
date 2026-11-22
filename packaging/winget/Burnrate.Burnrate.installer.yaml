@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+# TEMPLATE: rendered by packaging/scripts/render-manifests.mjs at release time.
+PackageIdentifier: Burnrate.Burnrate
+PackageVersion: __VERSION__
+InstallerType: nullsoft
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: "__DATE__"
+MinimumOSVersion: 10.0.0.0
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/__REPO__/releases/download/v__VERSION__/Burnrate-__VERSION__-windows-x64-setup.exe
+    InstallerSha256: __SHA256_WIN_SETUP__
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S
+ManifestType: installer
+ManifestVersion: 1.9.0

@@ -1,0 +1,340 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to release, e.g. v0.1.0
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  web:
+    name: Web bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11 --activate
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile
+      - name: Build
+        run: corepack pnpm build
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist/web
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows installer
+    needs:
+      - web
+    runs-on: windows-latest
+    env:
+      # Signing is opt-in. Empty secrets keep the release unsigned (see packaging/SIGNING.md).
+      SIGNING_PFX: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      SIGNING_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server-rs -> target
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11 --activate
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile
+      - name: Download web bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: dist/web
+      - name: Build server
+        run: cargo build --release --locked --manifest-path server-rs/Cargo.toml
+      - name: Build desktop shell
+        if: hashFiles('src-tauri/tauri.conf.json') != ''
+        shell: pwsh
+        run: |
+          npm install --global @tauri-apps/cli@^2
+          Push-Location src-tauri
+          tauri build --config ../packaging/tauri/bundle.conf.json --bundles nsis
+          Pop-Location
+      - name: Stage application
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG -replace '^v',''
+          $stage = Join-Path $env:RUNNER_TEMP "stage/Burnrate-$version"
+          New-Item -ItemType Directory -Force "$stage/web", "$stage/dist/web" | Out-Null
+          # The desktop [[bin]] is named `burnrate`; a missing binary is a build failure,
+          # never a silently shell-less zip.
+          Copy-Item "src-tauri/target/release/burnrate.exe" $stage
+          Copy-Item "server-rs/target/release/burnrate-server.exe" $stage
+          Copy-Item "dist/web/*" "$stage/web" -Recurse
+          # Direct burnrate.exe launches (no start.cmd) find the web dir at <exe>/dist/web.
+          Copy-Item "dist/web/*" "$stage/dist/web" -Recurse
+          Copy-Item "packaging/windows/start.cmd" $stage
+          Copy-Item "LICENSE" $stage
+          "STAGE_DIR=$stage" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Install NSIS (fallback only)
+        if: hashFiles('src-tauri/tauri.conf.json') == ''
+        shell: pwsh
+        run: choco install nsis --no-progress -y
+      - name: Build NSIS installer (fallback only)
+        if: hashFiles('src-tauri/tauri.conf.json') == ''
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG -replace '^v',''
+          if ($version -match '^(\d+)\.(\d+)\.(\d+)') {
+            $quad = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+          } else {
+            $quad = "0.0.0.0"
+          }
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" `
+            "/DPRODUCT_VERSION=$version" `
+            "/DPRODUCT_VERSION_QUAD=$quad" `
+            "/DSTAGE_DIR=$env:STAGE_DIR" `
+            "/DOUT_DIR=$(Get-Location)\packaging\windows" `
+            packaging\windows\burnrate.nsi
+      - name: Build portable zip
+        if: hashFiles('src-tauri/tauri.conf.json') != ''
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG -replace '^v',''
+          New-Item -ItemType Directory -Force out | Out-Null
+          Compress-Archive -Path "$env:STAGE_DIR/*" -DestinationPath "out/Burnrate-$version-windows-x64.zip"
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG -replace '^v',''
+          New-Item -ItemType Directory -Force out | Out-Null
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $setup) {
+            $setup = Get-ChildItem "packaging/windows/Burnrate-*-x64-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $setup) { throw "No Windows installer was produced" }
+          Copy-Item $setup.FullName "out/Burnrate-$version-windows-x64-setup.exe"
+      - name: Sign installer (optional)
+        if: env.SIGNING_PFX != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "burnrate-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX))
+          $password = ConvertTo-SecureString $env:SIGNING_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found; install the Windows SDK or unset the signing secrets" }
+          Get-ChildItem out/*.exe | ForEach-Object {
+            & $signtool.FullName sign /sha1 $cert.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $_.FullName
+          }
+          Remove-Item $pfx -Force
+      - name: Write SHA256SUMS
+        run: node packaging/scripts/checksums.mjs out --out out/SHA256SUMS
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            out/*
+            !out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Linux bundles
+    needs:
+      - web
+    runs-on: ubuntu-latest
+    env:
+      DESKTOP_BIN: burnrate
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server-rs -> target
+      - name: Install WebView dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11 --activate
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile
+      - name: Download web bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: dist/web
+      - name: Build server
+        run: cargo build --release --locked --manifest-path server-rs/Cargo.toml
+      - name: Build desktop shell and bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f src-tauri/tauri.conf.json ]; then
+            echo "::error::src-tauri is missing; tag releases require the desktop shell (work package 12)"
+            exit 1
+          fi
+          sudo npm install --global @tauri-apps/cli@^2
+          cd src-tauri
+          tauri build --config ../packaging/tauri/bundle.conf.json --bundles appimage,deb,rpm
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          mkdir -p out
+          bundle="src-tauri/target/release/bundle"
+          appimage="$(find "$bundle" -name '*.AppImage' -print -quit)"
+          deb="$(find "$bundle" -name '*.deb' -print -quit)"
+          rpm="$(find "$bundle" -name '*.rpm' -print -quit)"
+          for pair in "appimage:$appimage" "deb:$deb" "rpm:$rpm"; do
+            kind="${pair%%:*}"
+            file="${pair#*:}"
+            if [ -z "$file" ]; then
+              echo "::error::no $kind bundle found under $bundle"
+              exit 1
+            fi
+            case "$kind" in
+              appimage) name="Burnrate-$version-linux-x86_64.AppImage" ;;
+              deb) name="Burnrate-$version-linux-amd64.deb" ;;
+              rpm) name="Burnrate-$version-linux-x86_64.rpm" ;;
+            esac
+            cp "$file" "out/$name"
+          done
+      - name: Stage Linux tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          stage_root="$(mktemp -d)"
+          stage="$stage_root/Burnrate-$version-linux-x86_64"
+          mkdir -p "$stage/web"
+          cp "src-tauri/target/release/$DESKTOP_BIN" "$stage/burnrate"
+          cp server-rs/target/release/burnrate-server "$stage/burnrate-server"
+          cp -r dist/web/. "$stage/web/"
+          # find_web_dir() also probes <exe>/dist/web; keep a link so a direct
+          # `./burnrate` launch works without a wrapper.
+          mkdir -p "$stage/dist"
+          ln -s ../web "$stage/dist/web"
+          cp packaging/linux/org.burnrate.Burnrate.desktop "$stage/"
+          cp packaging/linux/org.burnrate.Burnrate.metainfo.xml "$stage/"
+          cp branding/burnrate-icon.svg "$stage/org.burnrate.Burnrate.svg"
+          cp LICENSE README.md "$stage/"
+          tar -C "$stage_root" -czf "out/Burnrate-$version-linux-x86_64.tar.gz" "Burnrate-$version-linux-x86_64"
+      - name: Sign artifacts (optional)
+        if: env.GPG_PRIVATE_KEY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          export GPG_TTY=/dev/null
+          for file in out/*; do
+            [ -f "$file" ] || continue
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --detach-sign "$file"
+          done
+      - name: Write SHA256SUMS
+        run: node packaging/scripts/checksums.mjs out --out out/SHA256SUMS
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            out/*
+            !out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    needs:
+      - windows
+      - linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        run: node packaging/scripts/checksums.mjs dist/release
+      - name: Render winget, Scoop, AUR and Flatpak manifests
+        run: |
+          node packaging/scripts/render-manifests.mjs \
+            --version "${RELEASE_TAG#v}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --checksums dist/release/SHA256SUMS \
+            --out dist/manifests
+      - name: Sign checksums (optional)
+        if: env.GPG_PRIVATE_KEY != ''
+        run: |
+          set -euo pipefail
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          export GPG_TTY=/dev/null
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --detach-sign dist/release/SHA256SUMS
+          find dist/release -maxdepth 1 -type f ! -name 'SHA256SUMS*' ! -name '*.asc' -print0 |
+            while IFS= read -r -d '' file; do
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --detach-sign "$file"
+            done
+      - name: Publish
+        run: |
+          set -euo pipefail
+          files=()
+          while IFS= read -r file; do files+=("$file"); done < <(find dist/release dist/manifests -type f)
+          gh release create "$RELEASE_TAG" "${files[@]}" \
+            --title "Burnrate ${RELEASE_TAG#v}" \
+            --generate-notes

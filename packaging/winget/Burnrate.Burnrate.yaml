@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.9.0.schema.json
+# TEMPLATE: version, repo, date and SHA256 tokens are filled by
+# `node packaging/scripts/render-manifests.mjs` during the release workflow.
+PackageIdentifier: Burnrate.Burnrate
+PackageVersion: __VERSION__
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.9.0

@@ -1,0 +1,31 @@
+[package]
+name = "burnrate-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tiny GUI-free CLI for the Burnrate loopback daemon (status, statusline, watch, waybar)."
+
+[lib]
+name = "burnrate_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "burnrate"
+path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[dependencies]
+# GUI-free on purpose: no GTK/WebView, no crypto/TLS stack (loopback HTTP only).
+ureq = { version = "2", default-features = false }
+serde_json = "1"
+
+[profile.release]
+# Size-tuned: this binary is spawned on every statusline redraw.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
