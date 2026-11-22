@@ -1,7 +1,19 @@
 import type { ComponentType, SVGProps } from "react";
 
+import {
+  AnthropicIcon,
+  AntigravityIcon,
+  ClaudeAI,
+  CursorIcon,
+  KiroIcon,
+  MistralIcon,
+  OllamaIcon,
+  OpenAI,
+  OpenRouterIcon,
+} from "~/components/Icons";
 import { cn } from "~/lib/utils";
-import { AnthropicIcon, ClaudeAI, MistralIcon, OllamaIcon, OpenAI, OpenRouterIcon } from "~/components/Icons";
+import { BRAND_ICONS } from "~/providers/brandIcons";
+import { normalizeAccentColor, providerInitials } from "~/providers/presentation";
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -9,31 +21,38 @@ type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 const ICONS: Record<string, IconComponent> = {
   claudeAgent: ClaudeAI,
   anthropic: AnthropicIcon,
+  "anthropic-admin": AnthropicIcon,
   codex: OpenAI,
   openai: OpenAI,
+  "openai-admin": OpenAI,
   mistral: MistralIcon,
   openrouter: OpenRouterIcon,
   ollama: OllamaIcon,
+  cursor: CursorIcon,
+  kiro: KiroIcon,
+  antigravity: AntigravityIcon,
 };
 
-function initials(label: string): string {
-  const words = label.trim().split(/[\s_-]+/).filter(Boolean);
-  const letters = words.length > 1 ? words.slice(0, 2).map((w) => w[0]) : [words[0]?.[0], words[0]?.[1]];
-  return letters.filter(Boolean).join("").toUpperCase() || "?";
-}
-
+/**
+ * A provider mark. Definition ids without a brand asset get an initials tile, tinted with the
+ * user's local accent when they picked one (`accent`), otherwise with the accent's default border.
+ */
 export function ProviderIcon({
   driver,
   label,
   className,
   iconClassName,
+  accent,
 }: {
   readonly driver: string;
   readonly label: string;
   readonly className?: string | undefined;
   readonly iconClassName?: string | undefined;
+  /** Optional local accent colour (`#rrggbb`) for providers drawn as initials. */
+  readonly accent?: string | undefined;
 }) {
-  const Icon = ICONS[driver];
+  const Icon = ICONS[driver] ?? BRAND_ICONS[driver];
+  const color = normalizeAccentColor(accent);
   return (
     <span className={cn("inline-flex shrink-0 items-center justify-center", className)}>
       {Icon ? (
@@ -44,9 +63,10 @@ export function ProviderIcon({
             "flex size-5 items-center justify-center rounded-md border bg-card text-3xs leading-none font-semibold text-foreground",
             iconClassName,
           )}
+          style={color ? { borderColor: color, color } : undefined}
           aria-hidden
         >
-          {initials(label)}
+          {providerInitials(label)}
         </span>
       )}
     </span>
