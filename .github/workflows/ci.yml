@@ -123,7 +123,7 @@ jobs:
         # PRs only gate the web bundle; skip the costly release LTO build there.
         if: github.event_name != 'pull_request'
         run: cargo build --release --locked --manifest-path server-rs/Cargo.toml
-      - name: Size gate (PR: web bundle only)
+      - name: "Size gate (PR: web bundle only)"
         # evaluateBudgets always applies the 520 KB JS / 60 KB CSS gates, with or without the server.
         if: github.event_name == 'pull_request' && hashFiles('scripts/perf-budget.mjs') != ''
         run: node scripts/perf-budget.mjs --skip-server
