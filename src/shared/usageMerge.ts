@@ -193,7 +193,7 @@ function claimSources(
           continue;
         }
         ownerScanByFingerprint.set(key, { environment, source });
-        sessionsByFingerprint.set(key, source.distinctSessions);
+        sessionsByFingerprint.set(key, source.windowSessions ?? source.distinctSessions);
       }
     }
   }
@@ -232,7 +232,7 @@ function claimSources(
       supplementalBucketsByEnvironment.set(environment.environmentId, supplemental);
       sessionsByFingerprint.set(
         key,
-        Math.max(sessionsByFingerprint.get(key) ?? 0, source.distinctSessions),
+        Math.max(sessionsByFingerprint.get(key) ?? 0, source.windowSessions ?? source.distinctSessions),
       );
     }
   }

@@ -64,8 +64,20 @@ function cursorUsageWindowRank(id: string): number {
 
 export interface LimitPoolMember {
   readonly account: LimitAccount;
+  /** The account's own window for this slot: its real usage, reset and pace clock. */
   readonly window: ServerProviderUsageWindow;
   readonly refillPercent: number;
+  /**
+   * When `refillPercent` comes back: the window's own reset, or the weekly reset while the weekly limit
+   * still caps this session. Unset when no clock says when.
+   */
+  readonly restoresAt?: string;
+  /**
+   * Set when the weekly limit is tighter than this session window, or spent (then 0): the session can
+   * only be used up to what the weekly limit still allows (percent of the WEEKLY limit that is left).
+   * A note only: `window` keeps the session's own figures.
+   */
+  readonly limitedByWeeklyLeft?: number;
 }
 
 export interface LimitPoolWindow {
@@ -158,7 +170,7 @@ export function collectLimitPools(
         (window) => orderWindow && poolKey(driver, window) === poolKey(driver, orderWindow),
       );
       return (
-        (window ? resetMillis(poolMember(account, window, now).window) : null) ??
+        (window ? isoMillis(poolMember(account, window, now).restoresAt) : null) ??
         Number.POSITIVE_INFINITY
       );
     };
@@ -200,23 +212,56 @@ function poolKey(driver: ProviderId, window: ServerProviderUsageWindow): string 
   return driver === "codex" ? window.kind : `${window.kind}:${window.id}`;
 }
 
-function poolMember(account: LimitAccount, reported: ServerProviderUsageWindow, now: number) {
-  const spentWeekly =
-    reported.kind === "session"
-      ? account.limits.windows.find(
-          (window) =>
-            window.usedPercent >= 100 &&
-            (account.driver === "claudeAgent"
-              ? window.id === "seven_day"
-              : account.driver === "codex" && window.kind === "weekly"),
-        )
-      : undefined;
-  if (!spentWeekly) return { account, window: reported, refillPercent: reported.usedPercent };
+/** The weekly window that caps this account's sessions (Claude: seven_day; Codex: the weekly slot). */
+function weeklyWindowOf(account: LimitAccount): ServerProviderUsageWindow | undefined {
+  return account.limits.windows.find((window) =>
+    account.driver === "claudeAgent"
+      ? window.id === "seven_day"
+      : account.driver === "codex" && window.kind === "weekly",
+  );
+}
 
-  const weeklyReset = resetMillis(spentWeekly);
+/**
+ * An account's member of a pool slot. A session keeps its own usage, reset and pace clock, so its figures
+ * are the real window. A weekly limit that is tighter than the session, or spent, only caps what can be
+ * used: it is a note (`limitedByWeeklyLeft`), and `restoresAt` says when usable quota comes back.
+ */
+function poolMember(
+  account: LimitAccount,
+  reported: ServerProviderUsageWindow,
+  now: number,
+): LimitPoolMember {
+  const weekly = reported.kind === "session" ? weeklyWindowOf(account) : undefined;
+  if (!weekly || (weekly.usedPercent <= reported.usedPercent && weekly.usedPercent < 100)) {
+    return {
+      account,
+      window: reported,
+      refillPercent: reported.usedPercent,
+      restoresAt: reported.resetsAt,
+    };
+  }
+  if (weekly.usedPercent < 100) {
+    // The weekly limit is not spent but is TIGHTER than the session (e.g. 69% of the session left but
+    // only 1% of the week): you cannot use more than the week still allows. Upstream T3 only handled a
+    // fully spent week, which overstated what is really usable.
+    const weeklyReset = resetMillis(weekly);
+    const sessionReset = resetMillis(reported);
+    const weeklyBinds = weeklyReset !== null && (sessionReset === null || weeklyReset > sessionReset);
+    return {
+      account,
+      window: reported,
+      refillPercent: reported.usedPercent,
+      restoresAt: weeklyBinds ? weekly.resetsAt : reported.resetsAt,
+      limitedByWeeklyLeft: Math.max(0, 100 - weekly.usedPercent),
+    };
+  }
+
+  // The week is spent, so nothing is usable until a reset frees quota: the week's, or the session's own
+  // when that lands after the week's.
+  const weeklyReset = resetMillis(weekly);
   const sessionReset = resetMillis(reported);
   const cutoff = Math.max(now, Date.parse(account.limits.checkedAt));
-  let resetsAt: string | undefined;
+  let restoresAt: string | undefined;
   let refillPercent = 0;
   // A stale or missing clock cannot tell us when blocked quota becomes usable.
   if (
@@ -226,22 +271,17 @@ function poolMember(account: LimitAccount, reported: ServerProviderUsageWindow, 
     sessionReset > cutoff
   ) {
     if (sessionReset <= weeklyReset) {
-      resetsAt = spentWeekly.resetsAt;
+      restoresAt = weekly.resetsAt;
       refillPercent = 100;
     } else if (reported.usedPercent >= 100) {
-      resetsAt = reported.resetsAt;
+      restoresAt = reported.resetsAt;
       refillPercent = 100;
     } else {
-      resetsAt = spentWeekly.resetsAt;
+      restoresAt = weekly.resetsAt;
       refillPercent = 100 - Math.max(0, Math.min(100, reported.usedPercent));
     }
   }
-  return {
-    account,
-    // Suppression is not session spending, so it has no session pace clock.
-    window: { ...reported, usedPercent: 100, resetsAt, windowDurationMins: undefined },
-    refillPercent,
-  };
+  return { account, window: reported, refillPercent, restoresAt, limitedByWeeklyLeft: 0 };
 }
 
 function poolWindows(accounts: readonly LimitAccount[], now: number): readonly LimitPoolWindow[] {
@@ -287,7 +327,7 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
         : null;
     const resets = members
       .flatMap((member) => {
-        const at = resetMillis(member.window);
+        const at = isoMillis(member.restoresAt);
         return at === null
           ? []
           : [
@@ -332,10 +372,76 @@ export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
 }
 
+// burnrate: usage.barMode chooses which number a bar represents ("remaining" is T3's default).
+export type BarValueMode = "remaining" | "used";
+
+export function barValue(window: ServerProviderUsageWindow, mode: BarValueMode): number {
+  return mode === "used"
+    ? Math.round(Math.max(0, Math.min(100, window.usedPercent)))
+    : remainingPercent(window);
+}
+
 function resetMillis(window: ServerProviderUsageWindow): number | null {
-  if (window.resetsAt === undefined) return null;
-  const at = Date.parse(window.resetsAt);
+  return isoMillis(window.resetsAt);
+}
+
+/** A reset clock as milliseconds, or null when it is missing or not a date. */
+function isoMillis(resetsAt: string | undefined): number | null {
+  if (resetsAt === undefined) return null;
+  const at = Date.parse(resetsAt);
   return Number.isFinite(at) ? at : null;
+}
+
+/** burnrate: the moment a window reaches 100% at its average burn rate so far. */
+export interface ProjectedEmpty {
+  readonly at: number;
+  readonly ms: number;
+}
+
+/**
+ * burnrate: project exhaustion from the elapsed share of the window. The estimate is only
+ * useful when it lands before the reset, so projections after the reset return null.
+ */
+export function projectedEmpty(
+  window: ServerProviderUsageWindow,
+  now: number,
+): ProjectedEmpty | null {
+  const used = Math.max(0, Math.min(100, window.usedPercent));
+  if (used <= 0 || used >= 100) return null;
+  const reset = resetMillis(window);
+  if (reset === null || window.windowDurationMins === undefined || window.windowDurationMins <= 0) {
+    return null;
+  }
+  const length = window.windowDurationMins * MINUTE;
+  const elapsed = Math.max(0, Math.min(length, length - (reset - now)));
+  if (elapsed <= 0) return null;
+  const ms = ((100 - used) / used) * elapsed;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const at = now + ms;
+  return at < reset ? { at, ms } : null;
+}
+
+/**
+ * burnrate: a report is stale once it is older than three refresh intervals (30 s floor),
+ * so a sleeping scheduler cannot present an old snapshot as current.
+ */
+export function isLimitStale(
+  checkedAt: string | undefined,
+  now: number,
+  refreshIntervalSec: number,
+): boolean {
+  if (checkedAt === undefined) return false;
+  const checked = Date.parse(checkedAt);
+  if (!Number.isFinite(checked)) return false;
+  return now - checked > Math.max(30, refreshIntervalSec) * 1000 * 3;
+}
+
+export function isLimitSnapshotStale(
+  limits: Pick<ServerProviderUsageLimits, "checkedAt" | "stale">,
+  now: number,
+  refreshIntervalSec: number,
+): boolean {
+  return limits.stale === true || isLimitStale(limits.checkedAt, now, refreshIntervalSec);
 }
 
 export function elapsedShare(window: ServerProviderUsageWindow, now: number): number | null {

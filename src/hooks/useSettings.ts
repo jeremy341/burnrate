@@ -1,4 +1,19 @@
-import { useSyncExternalStore } from "react";
+/**
+ * Thin adapter over the v2 settings store, kept so the copied T3 usage components (and App.tsx)
+ * do not have to change. The three legacy fields map onto their v2 homes:
+ *   theme -> appearance.themeMode, timestampFormat/hideSensitive -> general.*
+ */
+import { useMemo } from "react";
+
+import type { SettingsPatch } from "~/settings/schema";
+import {
+  clearSettingsError,
+  getSettingsError,
+  updateSettings as storeUpdate,
+  useSettings,
+  useSettingsError,
+  type SettingsError,
+} from "~/settings/store";
 import type { TimestampFormat } from "~/timestampFormat";
 
 export interface AppSettings {
@@ -7,33 +22,41 @@ export interface AppSettings {
   readonly hideSensitive: boolean;
 }
 
-const KEY = "burnrate.settings";
-const DEFAULTS: AppSettings = { timestampFormat: "locale", theme: "system", hideSensitive: false };
-const listeners = new Set<() => void>();
+export type { SettingsError };
+export { clearSettingsError, getSettingsError, useSettingsError };
 
-function read(): AppSettings {
-  try {
-    return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<AppSettings>) };
-  } catch {
-    return DEFAULTS;
-  }
-}
-let current = read();
-
-export function updateSettings(patch: Partial<AppSettings>): void {
-  current = { ...current, ...patch };
-  try {
-    localStorage.setItem(KEY, JSON.stringify(current));
-  } catch {
-    /* storage unavailable */
-  }
-  listeners.forEach((l) => l());
+interface LegacyPatch {
+  theme?: AppSettings["theme"];
+  timestampFormat?: TimestampFormat;
+  hideSensitive?: boolean;
 }
 
-export function usePrimarySettings<T = AppSettings>(select?: (s: AppSettings) => T): T {
-  const snapshot = useSyncExternalStore(
-    (l) => (listeners.add(l), () => listeners.delete(l)),
-    () => current,
+export type PrimarySettingsPatch = LegacyPatch | SettingsPatch;
+
+/** Accepts both the legacy three keys and any v2 patch; legacy keys never reach the server. */
+export function updateSettings(patch: PrimarySettingsPatch): Promise<void> {
+  const { theme, timestampFormat, hideSensitive, ...rest } = patch as LegacyPatch & SettingsPatch;
+  const mapped: SettingsPatch = { ...(rest as SettingsPatch) };
+  if (theme !== undefined) mapped.appearance = { ...mapped.appearance, themeMode: theme };
+  if (timestampFormat !== undefined) {
+    mapped.general = { ...mapped.general, timestampFormat };
+  }
+  if (hideSensitive !== undefined) {
+    mapped.general = { ...mapped.general, hideSensitive };
+  }
+  return storeUpdate(mapped);
+}
+
+/** The legacy `usePrimarySettings` shape, backed by the v2 store. */
+export function usePrimarySettings<T = AppSettings>(select?: (settings: AppSettings) => T): T {
+  const settings = useSettings();
+  const legacy = useMemo<AppSettings>(
+    () => ({
+      theme: settings.appearance.themeMode,
+      timestampFormat: settings.general.timestampFormat,
+      hideSensitive: settings.general.hideSensitive,
+    }),
+    [settings.appearance.themeMode, settings.general.timestampFormat, settings.general.hideSensitive],
   );
-  return (select ? select(snapshot) : snapshot) as T;
+  return (select ? select(legacy) : legacy) as T;
 }
