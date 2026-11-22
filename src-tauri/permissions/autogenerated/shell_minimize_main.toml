@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-shell-minimize-main"
+description = "Enables the shell_minimize_main command without any pre-configured scope."
+commands.allow = ["shell_minimize_main"]
+
+[[permission]]
+identifier = "deny-shell-minimize-main"
+description = "Denies the shell_minimize_main command without any pre-configured scope."
+commands.deny = ["shell_minimize_main"]

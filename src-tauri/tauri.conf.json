@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Burnrate",
+  "version": "0.1.0",
+  "identifier": "app.burnrate.desktop",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self' http://127.0.0.1:*; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' asset: http://asset.localhost data: http://127.0.0.1:*; style-src 'self' http://127.0.0.1:*; script-src 'self' http://127.0.0.1:*",
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "Minimal capability set. Windows load from the local HTTP server, so the shell bridge needs a remote grant for those origins.",
+          "windows": ["main"],
+          "remote": { "urls": ["http://127.0.0.1:*"] },
+          "permissions": [
+            "core:default",
+            "core:window:allow-start-dragging",
+            "core:window:allow-set-position",
+            "core:window:allow-set-focus",
+            "core:window:allow-show",
+            "core:window:allow-hide",
+            "core:window:allow-close",
+            "allow-shell-open-main",
+            "allow-shell-set-chrome"
+          ]
+        },
+        {
+          "identifier": "main-window-controls",
+          "description": "Window controls for the Burnrate main window.",
+          "windows": ["main"],
+          "remote": { "urls": ["http://127.0.0.1:*"] },
+          "permissions": [
+            "allow-shell-minimize-main",
+            "allow-shell-main-is-maximized",
+            "allow-shell-toggle-main-maximize",
+            "allow-shell-close-main"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": { "../dist/web": "web" },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "copyright": "Burnrate contributors",
+    "category": "Utility",
+    "shortDescription": "Local AI usage monitor",
+    "longDescription": "Burnrate monitors local AI coding-agent usage and limits. All data stays on this computer."
+  }
+}

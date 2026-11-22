@@ -1,0 +1,46 @@
+[package]
+# The package/bin name is the shipped binary name. Every installer, launcher and
+# release workflow step refers to `burnrate`, so keep this single source of truth.
+name = "burnrate"
+version = "0.1.0"
+description = "Burnrate desktop shell (Tauri 2)"
+edition = "2021"
+license = "MIT"
+rust-version = "1.77.2"
+
+[[bin]]
+name = "burnrate"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The server runs in-process in a thread; see docs/CONTRACTS.md section 12.
+burnrate-server = { path = "../server-rs" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# SSE client for /api/stream and the small settings/status JSON calls.
+ureq = { version = "2", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+# Autostart uses the per-user Run key; no admin rights are requested.
+winreg = "0.56"
+# Global hotkey only. These features are already transitive Tauri dependencies.
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Graphics_Dwm",
+  # Names the foreground app so a screenshot overlay is not mistaken for a fullscreen app.
+  "Win32_System_Threading",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
