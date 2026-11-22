@@ -1,11 +1,20 @@
-import type { EnvironmentId, ServerSettingsPatch } from "~/contracts";
-import { ChevronDownIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
-import { msg, T, useGT, useMessages, Var } from "~/i18n";
-import { useEffect, useRef, useState } from "react";
+import { useAtomValue } from "~/t3-shims/effectAtomReact";
+import {
+  AuthSettingsWriteScope,
+  type EnvironmentId,
+  sessionGrantsScope,
+} from "~/t3-shims/t3Contracts";
+import { PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
+import { AsyncResult, Atom } from "~/t3-shims/effectReactivity";
+import { msg, T, useGT, useMessages, Var } from "~/t3-shims/gt-react";
+import { useId, useRef, useState, type RefObject } from "react";
 
 import { cn } from "../../lib/utils";
-import { LOCAL_ENVIRONMENT_ID, type EnvironmentUsageStatus } from "~/state/usage";
-import { api } from "~/api";
+import { environmentPresentations } from "~/t3-shims/statePresentation";
+import { serverEnvironment } from "~/t3-shims/stateServer";
+import { environmentSession, readEnvironmentScope } from "~/t3-shims/stateSession";
+import { useAtomCommand } from "~/t3-shims/useAtomCommand";
+import { notifyUsagePricesChanged, type EnvironmentUsageStatus } from "~/state/usage";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -17,10 +26,9 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { Label } from "../ui/label";
-import { Menu, MenuCheckboxItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+import { UsageTableRegion } from "./UsageTableRegion";
 import { isUsagePriceEdit, USAGE_PRICE_FIELDS } from "./usagePriceForm";
 import {
   isEmptyUsagePriceDraft,
@@ -37,36 +45,42 @@ import {
   type UsagePriceWriteResult,
 } from "./usagePriceTargets";
 
-/** Price table and model names saved on this computer. */
-function useLocalPriceTargets(): readonly UsagePriceTarget[] {
-  const [target, setTarget] = useState<UsagePriceTarget>({
-    environmentId: LOCAL_ENVIRONMENT_ID,
-    label: "This computer",
-    prices: null,
-    aliases: null,
-    unavailable: msg("Prices not loaded"),
-  });
-  useEffect(() => {
-    let cancelled = false;
-    void api.settings().then(
-      (settings) => {
-        if (cancelled) return;
-        setTarget({
-          environmentId: LOCAL_ENVIRONMENT_ID,
-          label: "This computer",
-          prices: settings.usagePriceOverrides,
-          aliases: settings.usageModelAliases,
-          unavailable: null,
-        });
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
+const priceTargetsAtom = Atom.make((get): readonly UsagePriceTarget[] =>
+  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, environment]) => {
+    const settings = get(serverEnvironment.settingsValueAtom(environmentId));
+    const session = get(environmentSession.sessionStateAtom(environmentId));
+    const sessionData = AsyncResult.getOrElse(session, () => null);
+    const access =
+      session._tag === "Failure"
+        ? "denied"
+        : sessionData === null
+          ? session.waiting
+            ? "pending"
+            : "denied"
+          : sessionGrantsScope(sessionData, AuthSettingsWriteScope)
+            ? "granted"
+            : "denied";
+    return {
+      environmentId,
+      label: environment.entry.target.label,
+      prices: settings?.usagePriceOverrides ?? null,
+      aliases:
+        environment.serverConfig?.environment.capabilities.usageModelAliases === true
+          ? (settings?.usageModelAliases ?? null)
+          : null,
+      unavailable:
+        environment.connection.phase !== "connected"
+          ? msg("Offline")
+          : settings === null
+            ? msg("Prices not loaded")
+            : access === "pending"
+              ? msg("Checking permissions…")
+              : access === "denied"
+                ? msg("Read-only access")
+                : null,
     };
-  }, []);
-  return [target];
-}
+  }),
+);
 
 type SaveAttempt = {
   readonly drafts: readonly UsagePriceDraft[];
@@ -81,22 +95,34 @@ type SaveAttempt = {
 };
 
 export function UsagePriceOverrides({
-  usage,
+  usage = [],
+  modelSuggestions = [],
+  initialSelectedEnvironmentIds = null,
   initialModel,
   onOpenChange,
-  onChanged,
+  returnFocusRef,
 }: {
-  readonly usage: readonly EnvironmentUsageStatus[];
+  readonly usage?: readonly EnvironmentUsageStatus[];
+  readonly modelSuggestions?: readonly string[] | undefined;
+  /** Burnrate has one environment; a missing value means "all environments". */
+  readonly initialSelectedEnvironmentIds?: ReadonlySet<EnvironmentId> | null;
   readonly initialModel?: string | undefined;
   readonly onOpenChange: (open: boolean) => void;
-  readonly onChanged: () => void;
+  readonly returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const gt = useGT();
   const messages = useMessages();
-  const environments = useLocalPriceTargets().map((target) =>
+  const id = useId();
+  const modelListId = `${id}-models`;
+  const aliasListId = `${id}-aliases`;
+  const environments = useAtomValue(priceTargetsAtom).map((target) =>
     target.unavailable === null ? target : { ...target, unavailable: messages(target.unavailable) },
   );
-  const selected = environments;
+  // This app always runs on this PC: there is no destination picker, so every local target is selected.
+  const selectedIds = initialSelectedEnvironmentIds;
+  const selected = environments.filter(
+    (environment) => selectedIds === null || selectedIds.has(environment.environmentId),
+  );
   const [drafts, setDrafts] = useState<readonly UsagePriceDraft[]>(() =>
     initialModel === undefined ||
     selected.some(
@@ -108,18 +134,11 @@ export function UsagePriceOverrides({
       : [{ id: "new:initial", model: initialModel, isNew: true, values: {} }],
   );
   const [pending, setPending] = useState(false);
+  const [open, setOpen] = useState(true);
   const [attempt, setAttempt] = useState<SaveAttempt | null>(null);
   const focusRowRef = useRef<string | null>(null);
   const nextRowId = useRef(0);
-  const updateSettings = async (input: { input: { patch: ServerSettingsPatch } }) => {
-    try {
-      await api.patchSettings(input.input.patch);
-      onChanged();
-      return { _tag: "Success" } as const;
-    } catch {
-      return { _tag: "Failure" } as const;
-    }
-  };
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
   const customModels = [
     ...new Set(
       selected.flatMap((environment) => [
@@ -131,6 +150,7 @@ export function UsagePriceOverrides({
   const models = [
     ...new Set([
       ...customModels,
+      ...modelSuggestions,
       ...usage
         .filter((environment) =>
           selected.some((target) => target.environmentId === environment.environmentId),
@@ -256,7 +276,13 @@ export function UsagePriceOverrides({
           target.unavailable ?? [...changes.get(target.environmentId)!.errors.values()][0] ?? null,
       })),
       changes: new Map([...changes].map(([id, plan]) => [id, plan.changes])),
-      write: (input) => updateSettings(input),
+      write: async (input) => {
+        const result = readEnvironmentScope(input.environmentId, AuthSettingsWriteScope)
+          ? await updateSettings(input)
+          : ({ _tag: "Failure" } as const);
+        if (result._tag === "Success") notifyUsagePricesChanged();
+        return result;
+      },
       onResult: (environmentId, result) => {
         if (result.status === "failed") failed = true;
         setAttempt((previous) =>
@@ -272,38 +298,53 @@ export function UsagePriceOverrides({
 
   return (
     <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!pending) onOpenChange(open);
+      open={open}
+      onOpenChange={(next) => {
+        if (!pending) setOpen(next);
+      }}
+      onOpenChangeComplete={(next) => {
+        if (!next) onOpenChange(false);
       }}
     >
-      <DialogPopup className="max-w-4xl">
+      <DialogPopup finalFocus={returnFocusRef} className="max-w-4xl motion-reduce:transition-none">
         <DialogHeader>
           <DialogTitle>
-            <T>Custom model prices</T>
+            <T>Model prices</T>
           </DialogTitle>
           <DialogDescription>
             <T>
-              Prices and mappings apply to all past and future usage on this computer.
+              Prices and mappings apply to all past and future usage on this PC.
             </T>
           </DialogDescription>
         </DialogHeader>
-        <DialogPanel>
+        <DialogPanel scrollFade={false}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span />
             <span className="text-xs text-muted-foreground">
               <T>USD / million tokens</T>
             </span>
+            {selected.length > 0 ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={locked}
+                onClick={() => {
+                  const id = `new:${nextRowId.current++}`;
+                  focusRowRef.current = id;
+                  updateDraft({ id, model: "", isNew: true, values: {} });
+                }}
+              >
+                <PlusIcon aria-hidden />
+                <T>Add model</T>
+              </Button>
+            ) : null}
           </div>
           {selected.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {environments.length === 0
-                ? gt("Connect an environment to set model prices.")
-                : gt("Select an environment to see and change its model prices.")}
+              {gt("Model prices aren't available on this PC yet.")}
             </p>
           ) : (
             <>
-              <div className="min-w-0 overflow-hidden rounded-lg border border-border">
+              <UsageTableRegion label={gt("Custom model prices")} className="max-h-[min(24rem,50dvh)] rounded-lg border border-border [--usage-table-surface:var(--popover)]">
                 <Table className="min-w-180 table-fixed" aria-label={gt("Custom model prices")}>
                   <colgroup>
                     <col className="w-[22%]" />
@@ -315,37 +356,26 @@ export function UsagePriceOverrides({
                   </colgroup>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>
+                      <TableHead scope="col">
                         <T>Model ID</T>
                       </TableHead>
-                      <TableHead>
+                      <TableHead scope="col">
                         <T>Map to</T>
                       </TableHead>
                       {USAGE_PRICE_FIELDS.map((field) => (
-                        <TableHead key={field.key}>{messages(field.label)}</TableHead>
+                        <TableHead key={field.key} scope="col">{messages(field.label)}</TableHead>
                       ))}
-                      <TableHead>
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          aria-label={gt("Add model price")}
-                          disabled={locked}
-                          onClick={() => {
-                            const id = `new:${nextRowId.current++}`;
-                            focusRowRef.current = id;
-                            updateDraft({ id, model: "", isNew: true, values: {} });
-                          }}
-                        >
-                          <PlusIcon aria-hidden />
-                        </Button>
+                      <TableHead scope="col">
+                        <span className="sr-only">{gt("Actions")}</span>
                       </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {rows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center whitespace-normal">
-                          <p className="py-6 text-muted-foreground">
+                        <TableCell colSpan={7} className="whitespace-normal">
+                          {/* Pinned to the visible left edge so it stays readable when the table scrolls sideways. */}
+                          <p className="sticky start-0 max-w-80 py-6 text-muted-foreground">
                             {selected.some((environment) => environment.prices === null)
                               ? gt("Some environment prices are unavailable.")
                               : gt("No custom prices or mappings. Add a row to set one.")}
@@ -374,7 +404,7 @@ export function UsagePriceOverrides({
                                   aria-invalid={
                                     (row.model.trim() !== "" && error !== undefined) || undefined
                                   }
-                                  list="usage-price-models"
+                                  list={modelListId}
                                   placeholder={gt("Model ID")}
                                   autoComplete="off"
                                   spellCheck={false}
@@ -415,7 +445,7 @@ export function UsagePriceOverrides({
                                   aria-label={gt("Map {model} to model", {
                                     model: row.model || gt("new model"),
                                   })}
-                                  list="usage-alias-models"
+                                  list={aliasListId}
                                   placeholder={row.isNew ? gt("Optional") : aliasCell.placeholder}
                                   autoComplete="off"
                                   spellCheck={false}
@@ -474,7 +504,7 @@ export function UsagePriceOverrides({
                             <TableCell>
                               <Tooltip>
                                 <TooltipTrigger
-                                  render={<Button size="icon-xs" variant="ghost" />}
+                                  render={<Button size="icon-sm" variant="ghost" />}
                                   disabled={locked}
                                   aria-label={
                                     row.removed
@@ -516,15 +546,15 @@ export function UsagePriceOverrides({
                     )}
                   </TableBody>
                 </Table>
-              </div>
-              <datalist id="usage-price-models">
+              </UsageTableRegion>
+              <datalist id={modelListId}>
                 {models
                   .filter((model) => !customModels.includes(model))
                   .map((model) => (
                     <option key={model} value={model} />
                   ))}
               </datalist>
-              <datalist id="usage-alias-models">
+              <datalist id={aliasListId}>
                 {models
                   .filter((model) =>
                     selected.every(
@@ -573,9 +603,7 @@ export function UsagePriceOverrides({
         </DialogPanel>
         <DialogFooter variant="bare" className="items-center sm:justify-between">
           <span className="text-xs text-muted-foreground">
-            {hasChanges
-              ? gt("Changes apply to {destination}", { destination: gt("this computer") })
-              : ""}
+            {hasChanges ? gt("Changes apply on this PC") : ""}
           </span>
           <div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto">
             {hasChanges ? (

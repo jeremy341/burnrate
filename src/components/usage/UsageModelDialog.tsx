@@ -1,9 +1,10 @@
-import { T, useGT, useLocale, Var } from "~/i18n";
+import { T, useGT, useLocale, Var } from "~/t3-shims/gt-react";
+import { useState, type RefObject } from "react";
 import { formatPercent, formatTokens, formatUsd } from "~/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "~/shared/usageMerge";
 
 import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "~/state/usage";
-import { ProviderIcon } from "~/providers/ProviderIcon";
+import { ProviderInstanceIcon } from "~/t3-shims/ProviderInstanceIcon";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -41,6 +42,7 @@ export function UsageModelDialog({
   chartWindow,
   onSetPrice,
   onClose,
+  returnFocusRef,
 }: {
   readonly model: ModelTotals;
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -48,9 +50,11 @@ export function UsageModelDialog({
   readonly chartWindow: UsageChartWindow;
   readonly onSetPrice: () => void;
   readonly onClose: () => void;
+  readonly returnFocusRef: RefObject<HTMLElement | null>;
 }) {
   const gt = useGT();
   const locale = useLocale();
+  const [open, setOpen] = useState(true);
   const usage = mergeAnsweredUsage(
     environments,
     (bucket) => bucket.provider === model.provider && bucket.model === model.model,
@@ -71,15 +75,20 @@ export function UsageModelDialog({
 
   return (
     <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
+      open={open}
+      onOpenChange={setOpen}
+      onOpenChangeComplete={(next) => {
+        if (!next) onClose();
       }}
     >
-      <DialogPopup className="max-w-3xl">
+      <DialogPopup finalFocus={returnFocusRef} className="max-w-3xl motion-reduce:transition-none">
         <DialogHeader>
           <div className="flex items-center gap-2">
-            <ProviderIcon driver={presentation.driverKind} label={presentation.label} iconClassName="size-5" />
+            <ProviderInstanceIcon
+              driverKind={presentation.driverKind}
+              displayName={presentation.label}
+              iconClassName="size-5"
+            />
             <DialogTitle>{model.model}</DialogTitle>
           </div>
           <DialogDescription>
@@ -95,7 +104,7 @@ export function UsageModelDialog({
               {stats.map((stat) => (
                 <div key={stat.label} className="flex min-w-0 flex-col gap-0.5">
                   <dt className="text-xs text-muted-foreground">{stat.label}</dt>
-                  <dd className="text-2xl font-semibold text-foreground">{stat.value}</dd>
+                  <dd className="wrap-anywhere text-2xl font-semibold text-foreground tabular-nums">{stat.value}</dd>
                 </div>
               ))}
             </dl>

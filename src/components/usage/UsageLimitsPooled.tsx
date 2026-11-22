@@ -1,23 +1,28 @@
 import {
+  barValue,
   collectLimitPools,
   displayLimitWindows,
   type LimitAccount,
   type LimitPool,
   type LimitPoolMember,
   type LimitPoolWindow,
+  isLimitSnapshotStale,
+  paceOf,
   paceRemainingPercent,
   remainingPercent,
   toLimitAccounts,
 } from "~/shared/usageLimits";
 import { T, useGT, useMessages } from "~/i18n";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
-import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
+import { AlertTriangleIcon, ClockIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
 import {
   createContext,
   Fragment,
   type ReactNode,
   type RefObject,
   use,
+  useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -26,16 +31,39 @@ import {
 import type { LimitsAccount } from "~/contracts";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
+import { useSettings } from "~/settings/store";
 import { formatUpcomingTimestamp } from "~/timestampFormat";
-import { OpenAI } from "../Icons";
-import { ProviderIcon } from "~/providers/ProviderIcon";
-import { providerColor, providerLabel } from "~/providers/registry";
+import { ProviderInstanceIcon } from "~/t3-shims/ProviderInstanceIcon";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { PaceIcon, usePaceMark } from "./UsageLimits";
-import { cursorUsageWindowDetails, formatResetsIn } from "~/shared/usageLimitsCopy";
+import { usageDriverLabel } from "./usageProviders";
+import {
+  COLLAPSE_ALL_PROVIDERS_EVENT,
+  CollapseAllButton,
+  ProviderSection,
+  useCollapsedProviders,
+} from "./UsageLimitsCollapse";
+import { LimitsEmptyState } from "./UsageLimitsStates";
+import { accountLimitNotices, resetCreditLines } from "./usageLimitsAccountNotes";
+import {
+  PaceIcon,
+  StaleBadge,
+  barColor,
+  paceLabel,
+  usePaceMark,
+} from "./UsageLimits";
+import {
+  barValueText,
+  cursorUsageWindowDetails,
+  formatResetsIn,
+  limitFreshness,
+  type LimitFreshness,
+  provenanceDescription,
+} from "~/shared/usageLimitsCopy";
+import { normalizeProviderAccentColor } from "~/t3-shims/normalizeProviderAccentColor";
+import { providerClients } from "~/t3-shims/providerClients";
 
 
 function accountInitials(email: string): string {
@@ -75,9 +103,14 @@ function AccountAvatar({
 }) {
   if (!account.email) {
     return (
-      <ProviderIcon
-        driver={account.driver}
-        label={account.displayName ?? providerLabel(account.driver)}
+      <ProviderInstanceIcon
+        driverKind={account.driver}
+        displayName={
+          account.displayName ??
+          usageDriverLabel(account.driver, providerClients.get(account.driver)?.label) ??
+          String(account.driver)
+        }
+        accentColor={account.accentColor}
         className={cn("size-5", className)}
         iconClassName="size-4"
       />
@@ -86,7 +119,7 @@ function AccountAvatar({
   return <AccountChip email={account.email} />;
 }
 
-function AccountName({
+export function AccountName({
   account,
   className,
 }: {
@@ -103,7 +136,7 @@ function AccountName({
   }
   return (
     <span className={className}>
-      {providerLabel(account.driver)}
+      {usageDriverLabel(account.driver, providerClients.get(account.driver)?.label)}
     </span>
   );
 }
@@ -115,6 +148,11 @@ function Row({ label, children }: { readonly label: string; readonly children: R
       <span className="min-w-0 text-foreground tabular-nums">{children}</span>
     </div>
   );
+}
+
+/** The window as its usable quota comes back: its own reset, or the weekly reset while the week caps it. */
+function restoreClock(window: LimitPoolMember["window"], restoresAt: string | undefined) {
+  return { ...window, resetsAt: restoresAt };
 }
 
 function SegmentPopover({
@@ -135,14 +173,15 @@ function SegmentPopover({
   const timeLeft = paceRemainingPercent(window, now);
   const resetsIn = formatResetsIn(window, now, m, "in");
   const where = account.sourceLabel;
+  const creditLines = resetCreditLines(account.limits, now, m);
   return (
     <div className="flex w-72 max-w-[calc(100vw-3rem)] flex-col gap-2.5 text-xs">
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="flex items-center gap-2 text-sm font-medium text-foreground">
           <AccountAvatar account={account} />
-          <span className="truncate">
+          <span className="min-w-0 wrap-anywhere">
             {account.displayName ??
-              providerLabel(account.driver)}
+              usageDriverLabel(account.driver, providerClients.get(account.driver)?.label)}
           </span>
         </span>
         {account.email ? (
@@ -179,6 +218,15 @@ function SegmentPopover({
             {gt("+{percent}% of pool", { percent: reset.restoresPercent })}
           </Row>
         ) : null}
+        {creditLines.length > 0 ? (
+          <Row label={gt("Credits", { $context: "banked reset credits" })}>
+            <span className="flex flex-col gap-0.5">
+              {creditLines.map((line) => (
+                <span key={line}>{line}</span>
+              ))}
+            </span>
+          </Row>
+        ) : null}
       </div>
     </div>
   );
@@ -207,28 +255,29 @@ function ActiveSegmentPopover({
   readonly pools: readonly LimitPool[];
   readonly now: number;
 }) {
-  const available = pools.some((pool) =>
-    displayLimitWindows(pool).some((window) =>
-      window.members.some(
-        (member) =>
-          member.account.key === payload.account.key &&
-          member.window.id === payload.window.id &&
-          member.window.kind === payload.window.kind,
-      ),
-    ),
+  const provider = pools.find((pool) => pool.driver === payload.account.driver);
+  const window = provider && displayLimitWindows(provider).find((entry) =>
+    entry.kind === payload.window.kind && entry.id === payload.window.id,
   );
+  const member = window?.members.find((entry) => entry.account.key === payload.account.key);
   // The trigger is gone, so the popup has nothing to anchor to: an exit transition would
   // slide it to the viewport origin. Unmount it outright, which also clears Base UI's
   // active-trigger bookkeeping so the segment can open again when it comes back.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the popover handle and unmounts the Base UI popup before paint when its trigger is gone
   useLayoutEffect(() => {
-    if (available) return;
+    if (member) return;
     handle.close();
     actions.current?.unmount();
-  }, [available, handle, actions]);
+  }, [member, handle, actions]);
+  if (!member) return null;
   return (
-    <PopoverPopup side="top" sideOffset={6}>
-      <SegmentPopover {...payload} now={now} />
+    <PopoverPopup side="top" sideOffset={6} className="max-h-(--available-height) overflow-y-auto overscroll-contain">
+      <SegmentPopover
+        account={member.account}
+        window={member.window}
+        reset={window?.resets.find((reset) => reset.member.account.key === member.account.key)}
+        now={now}
+      />
     </PopoverPopup>
   );
 }
@@ -240,6 +289,7 @@ function PoolSegment({
   readonly account: LimitAccount;
   readonly window: LimitPoolMember["window"];
   readonly reset: LimitPoolWindow["resets"][number] | undefined;
+  readonly restoresAt: string | undefined;
   readonly refillPercent: number;
   readonly color: string;
   readonly now: number;
@@ -253,12 +303,14 @@ function SegmentTriggers({
   account,
   window,
   reset,
+  restoresAt,
   refillPercent,
   color,
   now,
   index,
   showAccountName,
 }: SegmentPayload & {
+  readonly restoresAt: string | undefined;
   readonly refillPercent: number;
   readonly color: string;
   readonly now: number;
@@ -266,23 +318,34 @@ function SegmentTriggers({
   readonly showAccountName: boolean;
 }) {
   const popover = use(SegmentPopoverContext) ?? undefined;
+  // burnrate: the pooled bars honour the same barMode / showPaceTick settings as the single bars.
+  const barMode = useSettings((settings) => settings.usage.barMode);
+  const showPaceTick = useSettings((settings) => settings.usage.showPaceTick);
   const payload: SegmentPayload = { account, window, reset };
   const remaining = remainingPercent(window);
+  const shown = barValue(window, barMode);
+  const pace = paceOf(window, now);
   const timeLeft = paceRemainingPercent(window, now);
-  const [segmentRef, paceMark] = usePaceMark(timeLeft);
+  const [segmentRef, paceMark] = usePaceMark(showPaceTick ? timeLeft : null);
   const m = useMessages();
+  const refreshIntervalSec = useSettings((settings) => settings.usage.refreshIntervalSec);
+  const freshness = limitFreshness(account.limits, now, refreshIntervalSec, m);
   const resetsIn = formatResetsIn(window, now, m);
-  const refillIn = formatResetsIn(window, now, m, "refill");
+  const refillIn = formatResetsIn(restoreClock(window, restoresAt), now, m, "refill");
   const credits = account.limits.resetCredits?.availableCount ?? 0;
   const gt = useGT();
+  const name =
+    account.displayName ?? (account.email ? accountInitials(account.email) : account.driver);
+  const valueText = barValueText(shown, barMode, gt);
+  // burnrate: pace also has a text form, so a colour alone never carries meaning.
+  const paceText = pace === null ? null : paceLabel(pace, gt);
   const segmentLabel = [
-    gt("{name}: {remaining}% left", {
-      name:
-        account.displayName ?? (account.email ? accountInitials(account.email) : account.driver),
-      remaining,
-    }),
+    gt("{name}: {valueText}", { name, valueText }),
+    freshness?.description,
+    paceText,
     resetsIn,
     timeLeft === null ? null : gt("{timeLeft}% of the window left", { timeLeft }),
+    window.provenance ? provenanceDescription(window.provenance, m) : null,
     credits
       ? gt(
           "{count, plural, one {{count} reset credit banked} other {{count} reset credits banked}}",
@@ -304,17 +367,29 @@ function SegmentTriggers({
             type="button"
             style={{ gridColumn: index, gridRow: 1, ...paceMark?.gappedTrack }}
             aria-label={segmentLabel}
-            className="relative h-5 min-w-0 cursor-pointer rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-inset data-[popup-open]:ring-border @2xl/pool:h-8"
+            data-stale-member={freshness ? true : undefined}
+            data-pace={pace ?? undefined}
+            className="br-usage-meter relative h-6 min-w-0 cursor-pointer rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-inset data-[popup-open]:ring-border @2xl/pool:h-8 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:content-['']"
           />
         }
       >
+        {/* burnrate: the button stays the popover trigger; this nested meter exposes the bar's value. */}
+        <span
+          role="meter"
+          className="sr-only"
+          aria-label={gt("{name}: {label}", { name, label: window.label })}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={shown}
+          aria-valuetext={segmentLabel}
+        />
         <div aria-hidden className="absolute inset-0 overflow-hidden rounded-md">
           {/* Clipped inside the rounded clip so the bar's own corners keep their antialiasing. */}
           <div className="absolute inset-0" style={paceMark?.gap}>
             <div
               aria-hidden
-              className="absolute inset-y-0 left-0 rounded-md opacity-35"
-              style={{ width: `${remaining}%`, backgroundColor: color }}
+              className="br-usage-meter__fill absolute inset-y-0 left-0 rounded-md opacity-35"
+              style={{ width: `${shown}%`, backgroundColor: color }}
             />
             {remaining < 100 && reset && refillPercent > 0 ? (
               <div
@@ -331,15 +406,19 @@ function SegmentTriggers({
         {paceMark ? (
           <span
             aria-hidden
-            className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+            className="br-usage-meter__tick absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
             style={paceMark.tick}
           />
         ) : null}
+        {freshness ? (
+          <span aria-hidden className="pointer-events-none absolute inset-0 rounded-md border border-dashed border-warning-foreground" />
+        ) : null}
         <span
           aria-hidden
-          className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md text-3xs leading-none font-semibold text-foreground/80 tabular-nums @2xl/pool:hidden"
+          className="absolute inset-0 flex items-center justify-center gap-1 overflow-hidden rounded-md text-3xs leading-none font-semibold text-foreground/80 tabular-nums @2xl/pool:hidden"
         >
           {index}
+          {freshness ? <ClockIcon className="size-3 shrink-0 text-warning-foreground" /> : null}
         </span>
         <div className="relative hidden h-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 text-xs @2xl/pool:flex">
           {showAccountName ? (
@@ -351,15 +430,16 @@ function SegmentTriggers({
           {/* A single-account bar repeats the headline percentage. */}
           {showAccountName ? (
             <span className="shrink-0 font-semibold text-foreground tabular-nums">
-              {remaining}%
+              {shown}%
             </span>
           ) : null}
-          {resetsIn || credits ? (
+          {freshness ? <SegmentAge freshness={freshness} /> : null}
+          {refillIn || credits ? (
             <span className="ms-auto flex min-w-0 items-center gap-1.5 overflow-hidden rounded-sm bg-background/85 px-1.5 py-0.5 text-2xs whitespace-nowrap text-foreground tabular-nums">
               {refillIn ?? ""}
               {credits ? (
                 <>
-                  {resetsIn ? (
+                  {refillIn ? (
                     <span aria-hidden className="text-muted-foreground">
                       ·
                     </span>
@@ -374,8 +454,24 @@ function SegmentTriggers({
           ) : null}
         </div>
       </PopoverTrigger>
-      <LegendRow payload={payload} color={color} now={now} index={index} />
+      <LegendRow
+        payload={payload}
+        color={color}
+        now={now}
+        index={index}
+        freshness={freshness}
+        restoresAt={restoresAt}
+      />
     </>
+  );
+}
+
+function SegmentAge({ freshness }: { readonly freshness: LimitFreshness }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 text-2xs text-warning-foreground tabular-nums">
+      <ClockIcon className="size-3" aria-hidden />
+      {freshness.short}
+    </span>
   );
 }
 
@@ -384,17 +480,21 @@ function LegendRow({
   color,
   now,
   index,
+  freshness,
+  restoresAt,
 }: {
   readonly payload: SegmentPayload;
   readonly color: string;
   readonly now: number;
   readonly index: number;
+  readonly freshness: LimitFreshness | null;
+  readonly restoresAt: string | undefined;
 }) {
   const popover = use(SegmentPopoverContext) ?? undefined;
   const { account, window } = payload;
   const remaining = remainingPercent(window);
   const m = useMessages();
-  const resetsIn = formatResetsIn(window, now, m, "refill");
+  const resetsIn = formatResetsIn(restoreClock(window, restoresAt), now, m, "refill");
   const credits = account.limits.resetCredits?.availableCount ?? 0;
   const gt = useGT();
   return (
@@ -416,6 +516,7 @@ function LegendRow({
       </span>
       <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
       <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
+      {freshness ? <SegmentAge freshness={freshness} /> : null}
       <span className="ms-auto flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground tabular-nums">
         {resetsIn ?? ""}
         {credits ? (
@@ -465,8 +566,9 @@ function PoolBar({
               account={member.account}
               window={member.window}
               reset={restores.get(member.account.key)}
+              restoresAt={member.restoresAt}
               refillPercent={member.refillPercent}
-              color={member.account.accentColor ?? color}
+              color={normalizeProviderAccentColor(member.account.accentColor) ?? color}
               now={now}
               index={position + 1}
               showAccountName={pool.columns.length > 1}
@@ -504,23 +606,37 @@ function PoolWindowCard({
   readonly description?: string | undefined;
 }) {
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
+  const barMode = useSettings((settings) => settings.usage.barMode);
+  const refreshIntervalSec = useSettings((settings) => settings.usage.refreshIntervalSec);
+  const containsOldData = pool.members.some(({ account }) => isLimitSnapshotStale(account.limits, now, refreshIntervalSec));
+  const oldDataId = useId();
+  const shown = barMode === "used" ? pool.usedPercent : pool.remainingPercent;
+  const gt = useGT();
   return (
-    <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
+    <div className="@container/card grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 @[30rem]/card:grid-cols-[11rem_minmax(0,1fr)]">
       <div className="flex flex-col gap-1">
         {label !== null ? (
           <span className="text-sm font-medium text-foreground">{label ?? pool.label}</span>
         ) : null}
-        <span className="flex items-baseline gap-2">
-          <span className="text-3xl font-semibold text-foreground tabular-nums">
-            {pool.remainingPercent}%
-          </span>
+        <span role="group" className="flex items-baseline gap-2" aria-describedby={containsOldData ? oldDataId : undefined}>
+          <span className="text-3xl font-semibold text-foreground tabular-nums">{shown}%</span>
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
             <span>
-              <T context="remaining usage percentage">left</T>
+              {barMode === "used" ? (
+                gt("used")
+              ) : (
+                <T context="remaining usage percentage">left</T>
+              )}
             </span>
             {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
           </span>
         </span>
+        {containsOldData ? (
+          <span id={oldDataId} className="flex items-center gap-1 text-xs text-warning-foreground">
+            <ClockIcon className="size-3 shrink-0" aria-hidden />
+            {gt("Includes old data")}
+          </span>
+        ) : null}
         {nextRefill && pool.columns.length > 1 ? (
           <span className="text-xs font-medium text-foreground tabular-nums">
             ↻ +{nextRefill.restoresPercent}%
@@ -529,28 +645,40 @@ function PoolWindowCard({
       </div>
       <PoolBar pool={pool} color={color} now={now} />
       {description ? (
-        <p className="text-xs text-muted-foreground md:col-span-2">{description}</p>
+        <p className="text-xs text-muted-foreground @[30rem]/card:col-span-2">{description}</p>
       ) : null}
     </div>
   );
 }
 
-function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
-  const color = providerColor(pool.driver);
-  const label = providerLabel(pool.driver);
+function PoolSection({
+  pool,
+  now,
+  collapsed,
+  onCollapsedChange,
+  headerAction,
+}: {
+  readonly pool: LimitPool;
+  readonly now: number;
+  /** Shown at the end of the provider's heading row. */
+  readonly headerAction?: React.ReactNode;
+  // burnrate: a provider section can be collapsed; its heading then summarises it.
+  readonly collapsed: boolean;
+  readonly onCollapsedChange: (collapsed: boolean) => void;
+}) {
+  const color = barColor(pool.driver);
+  const label = usageDriverLabel(pool.driver, providerClients.get(pool.driver)?.label);
   const windows = displayLimitWindows(pool);
   const m = useMessages();
   return (
-    <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
-        <ProviderIcon
-          driver={pool.driver}
-          label={label}
-          className="size-5"
-          iconClassName="size-4 text-foreground/80"
-        />
-        {label}
-      </h2>
+    <ProviderSection
+      pool={pool}
+      label={label}
+      now={now}
+      collapsed={collapsed}
+      onCollapsedChange={onCollapsedChange}
+      headerAction={headerAction}
+    >
       {windows.map((window) => {
         const details =
           pool.driver === "cursor" ? cursorUsageWindowDetails(window.id, pool, m) : undefined;
@@ -565,18 +693,22 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           />
         );
       })}
-    </section>
+    </ProviderSection>
   );
 }
 
+/**
+ * ChatGPT/Codex reports native session and weekly windows, so the old "open ChatGPT usage" card
+ * (still sent by older servers) would only duplicate them. Never render it.
+ */
 const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";
 
 /** Providers that cannot show their limits here link to their own usage page. */
-function collectExternalLinks(accounts: readonly LimitsAccount[], host: string) {
+export function collectExternalLinks(accounts: readonly LimitsAccount[], host: string) {
   const links = new Map<string, { label: string; url: string; message: string | undefined; accounts: string[] }>();
   for (const account of accounts) {
     const external = account.limits.externalUsage;
-    if (!external) continue;
+    if (!external || external.url === CHATGPT_USAGE_URL) continue;
     const name = `${account.displayName ?? account.label} on ${host}`;
     const held = links.get(external.url);
     links.set(external.url, {
@@ -603,20 +735,73 @@ export function UsageLimitsPooled({
   const externalLinks = collectExternalLinks(accounts, hostLabel);
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(toLimitAccounts(accounts), now);
+  const m = useMessages();
+  // burnrate: a snapshot we could not refresh is still the last known truth. Keep it in the pool so
+  // an exhausted account cannot silently vanish, and name it separately with its age.
+  const refreshIntervalSec = useSettings((settings) => settings.usage.refreshIntervalSec);
+  const allAccounts = toLimitAccounts(accounts);
+  const staleAccounts = allAccounts.flatMap((account) => {
+    const freshness = limitFreshness(account.limits, now, refreshIntervalSec, m);
+    return freshness === null ? [] : [{ account, freshness }];
+  });
+  const pools = collectLimitPools(allAccounts, now);
+  const accountNotices = accountLimitNotices(accounts, m);
+  const { collapsed, setCollapsed, setAll } = useCollapsedProviders();
+  // burnrate: the command palette asks for "collapse/expand all" through a window event.
+  const poolIds = pools.map((pool) => pool.driver).join("\u0000");
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const next = (event as CustomEvent<{ collapsed: boolean }>).detail?.collapsed === true;
+      setAll(poolIds === "" ? [] : poolIds.split("\u0000"), next);
+    };
+    window.addEventListener(COLLAPSE_ALL_PROVIDERS_EVENT, onRequest);
+    return () => window.removeEventListener(COLLAPSE_ALL_PROVIDERS_EVENT, onRequest);
+  }, [poolIds, setAll]);
+  // burnrate: name the accounts whose limits could not be refreshed so the gap is visible.
   return (
-    <div className="flex flex-col gap-8">
-      {pools.length === 0 && notices.length === 0 && externalLinks.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          <T>No provider reports subscription limits yet. Connect one in Providers.</T>
-        </p>
+    <div className="flex min-w-0 flex-col gap-4">
+      {staleAccounts.length > 0 ? (
+        <div role="status" className="flex flex-col items-start gap-1">
+          {staleAccounts.map(({ account, freshness }) => (
+            <div key={account.key} className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+              <AccountName account={account} className="min-w-0 font-medium" />
+              <span className="text-muted-foreground">{gt("Limits unavailable")}</span>
+              <StaleBadge freshness={freshness} />
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {pools.length === 0 &&
+      staleAccounts.length === 0 &&
+      notices.length === 0 &&
+      externalLinks.length === 0 &&
+      accountNotices.length === 0 ? (
+        <LimitsEmptyState />
       ) : null}
       <SegmentPopoverContext value={segmentPopover}>
-        {pools.map((pool) => (
-          <Fragment key={pool.driver}>
-            <PoolSection pool={pool} now={now} />
-          </Fragment>
-        ))}
+        <div className="flex min-w-0 flex-col gap-8">
+          {pools.map((pool, index) => (
+            <Fragment key={pool.driver}>
+              <PoolSection
+                pool={pool}
+                now={now}
+                collapsed={collapsed.has(pool.driver)}
+                onCollapsedChange={(next) => setCollapsed(pool.driver, next)}
+                // "Collapse all" lives on the first provider's heading row (no row of its own), and only
+                // once there is more than one provider.
+                headerAction={
+                  index === 0 && pools.length > 1 ? (
+                    <CollapseAllButton
+                      ids={pools.map((entry) => entry.driver)}
+                      collapsed={collapsed}
+                      onSetAll={setAll}
+                    />
+                  ) : undefined
+                }
+              />
+            </Fragment>
+          ))}
+        </div>
       </SegmentPopoverContext>
       <Popover handle={segmentPopover} actionsRef={segmentPopoverActions}>
         {({ payload }) =>
@@ -634,15 +819,10 @@ export function UsageLimitsPooled({
       {externalLinks.map((link) => (
         <section key={link.url} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            {link.url === CHATGPT_USAGE_URL ? <OpenAI className="size-5 shrink-0" aria-hidden="true" /> : null}
             <div className="min-w-0 space-y-1">
               <h2 className="text-sm font-medium">{link.label}</h2>
               <p className="text-xs break-words text-muted-foreground">{link.accounts.join(", ")}</p>
-              {link.url === CHATGPT_USAGE_URL ? (
-                <p className="text-xs text-muted-foreground">
-                  <T>View usage in ChatGPT with your connected account.</T>
-                </p>
-              ) : link.message ? (
+              {link.message ? (
                 <p className="max-w-xl text-xs text-muted-foreground">{link.message}</p>
               ) : null}
             </div>
@@ -653,8 +833,32 @@ export function UsageLimitsPooled({
           </Button>
         </section>
       ))}
+      <AccountLimitNotes notices={accountNotices} />
       <LimitNotices notices={notices} />
     </div>
+  );
+}
+
+/** Accounts without a bar still say why, in T3's words, rather than vanishing from the page. */
+function AccountLimitNotes({
+  notices,
+}: {
+  readonly notices: ReturnType<typeof accountLimitNotices>;
+}) {
+  const gt = useGT();
+  if (notices.length === 0) return null;
+  return (
+    <ul
+      aria-label={gt("Accounts without limits")}
+      className="flex flex-col gap-1 text-xs text-muted-foreground"
+    >
+      {notices.map((notice) => (
+        <li key={notice.key} className="flex min-w-0 flex-wrap gap-x-2">
+          <span className="font-medium text-foreground">{notice.name}</span>
+          <span>{notice.message}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

@@ -1,4 +1,4 @@
-import { msg } from "~/i18n";
+import { msg } from "~/t3-shims/gt-react";
 import type { UsageModelPriceOverride } from "~/contracts";
 
 export const USAGE_PRICE_FIELDS = [
@@ -16,8 +16,8 @@ export type UsagePriceForm = { model: string } & Record<
 export function usagePriceForm(model = "", price?: UsageModelPriceOverride): UsagePriceForm {
   return {
     model,
-    inputCostPerMillionTokens: price?.inputCostPerMillionTokens.toString() ?? "",
-    outputCostPerMillionTokens: price?.outputCostPerMillionTokens.toString() ?? "",
+    inputCostPerMillionTokens: price?.inputCostPerMillionTokens?.toString() ?? "",
+    outputCostPerMillionTokens: price?.outputCostPerMillionTokens?.toString() ?? "",
     cacheReadCostPerMillionTokens: price?.cacheReadCostPerMillionTokens?.toString() ?? "",
     cacheWriteCostPerMillionTokens: price?.cacheWriteCostPerMillionTokens?.toString() ?? "",
   };

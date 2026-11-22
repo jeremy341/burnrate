@@ -1,21 +1,31 @@
-import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
-import { msg, T, useGT, useMessages } from "~/i18n";
+import { ClockIcon, GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
+import { msg, T, useGT, useMessages, type MFunctionType } from "~/i18n";
 import { Fragment, useLayoutEffect, useState } from "react";
 
-import type { LimitsAccount, UsageWindow as ServerProviderUsageWindow } from "~/contracts";
+import type {
+  LimitsAccount,
+  UsageWindow as ServerProviderUsageWindow,
+} from "~/contracts";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { observeResize } from "~/lib/observeResize";
 import { providerColor } from "~/providers/registry";
+import { useSettings } from "~/settings/store";
 import { formatUpcomingTimestamp } from "~/timestampFormat";
 import {
+  barValue,
   type LimitPace,
   paceOf,
   paceRemainingPercent,
-  remainingPercent,
 } from "~/shared/usageLimits";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
-import { formatResetsIn } from "~/shared/usageLimitsCopy";
+import {
+  barValueText,
+  formatResetsIn,
+  type LimitFreshness,
+  provenanceDescription,
+} from "~/shared/usageLimitsCopy";
+import { normalizeProviderAccentColor } from "~/t3-shims/normalizeProviderAccentColor";
 
 const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof GaugeIcon }> = {
   ahead: {
@@ -29,7 +39,16 @@ const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof Ga
   },
 };
 
+/**
+ * T3 looks this up in `PROVIDER_PRESENTATION` then `LIMIT_SOURCE_PRESENTATION`. Our
+ * server-driven registry carries both (including Mistral's amber), so it is the single adapter.
+ */
 export const barColor = providerColor;
+
+// burnrate: pace is also expressed as text, so the icon/tick is never the only signal.
+export function paceLabel(pace: LimitPace, resolve: MFunctionType = (value) => value): string {
+  return resolve(PACE[pace].label);
+}
 
 export function PaceIcon({ pace }: { readonly pace: LimitPace }) {
   const Icon = PACE[pace].icon;
@@ -41,7 +60,8 @@ export function PaceIcon({ pace }: { readonly pace: LimitPace }) {
           <span
             role="img"
             aria-label={m(PACE[pace].label)}
-            className="inline-flex text-muted-foreground"
+            tabIndex={0}
+            className="inline-flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           />
         }
       >
@@ -90,6 +110,27 @@ export function usePaceMark(timeLeft: number | null) {
   return [setBar, roomy ? paceMarkStyles(timeLeft) : null] as const;
 }
 
+// burnrate: stale async data is announced politely rather than silently shown as current.
+export function StaleBadge({ freshness }: { readonly freshness: LimitFreshness }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            tabIndex={0}
+            className="br-usage-stale inline-flex min-h-6 min-w-0 items-center gap-1.5 rounded-sm bg-muted px-2 py-0.5 text-xs text-warning-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          />
+        }
+      >
+        <ClockIcon className="size-3 shrink-0" aria-hidden />
+        <span className="wrap-anywhere">{freshness.short}</span>
+        <span className="sr-only">{freshness.description}</span>
+      </TooltipTrigger>
+      <TooltipPopup>{freshness.description}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 function WindowBar({
   color,
   window,
@@ -100,33 +141,31 @@ function WindowBar({
   readonly now: number;
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+  // burnrate: barMode / showPaceTick come from the settings store (package 26 keeps these exports).
+  const barMode = useSettings((settings) => settings.usage.barMode);
+  const showPaceTick = useSettings((settings) => settings.usage.showPaceTick);
   const gt = useGT();
   const m = useMessages();
-  const remaining = remainingPercent(window);
+  const shown = barValue(window, barMode);
+  const pace = paceOf(window, now);
   const timeLeft = paceRemainingPercent(window, now);
-  const [barRef, paceMark] = usePaceMark(timeLeft);
+  const [barRef, paceMark] = usePaceMark(showPaceTick ? timeLeft : null);
   const resetsIn = formatResetsIn(window, now, m);
   const resetsAt = window.resetsAt
     ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m)
     : null;
   const label = window.label;
-  const summary =
-    timeLeft === null
-      ? resetsIn
-        ? gt("{label}: {remaining}% left, {resetsIn}", { label, remaining, resetsIn })
-        : gt("{label}: {remaining}% left", { label, remaining })
-      : resetsIn
-        ? gt("{label}: {remaining}% left, {timeLeft}% of the window left, {resetsIn}", {
-            label,
-            remaining,
-            timeLeft,
-            resetsIn,
-          })
-        : gt("{label}: {remaining}% left, {timeLeft}% of the window left", {
-            label,
-            remaining,
-            timeLeft,
-          });
+  const valueText = barValueText(shown, barMode, gt);
+  // burnrate: an accessible name (the window) plus a value text (the number and its context).
+  const summary = [
+    gt("{label}: {valueText}", { label, valueText }),
+    timeLeft === null ? null : gt("{timeLeft}% of the window left", { timeLeft }),
+    resetsIn,
+    // The provenance badge is gone; keep its meaning for screen readers.
+    window.provenance ? provenanceDescription(window.provenance, m) : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
     <Tooltip>
@@ -134,27 +173,32 @@ function WindowBar({
         render={
           <div
             ref={barRef}
-            role="img"
-            aria-label={summary}
+            role="meter"
+            aria-label={label}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={shown}
+            aria-valuetext={summary}
+            data-pace={pace ?? undefined}
             tabIndex={0}
-            className="relative h-6 cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            className="br-usage-meter relative h-6 cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           />
         }
       >
         {/* Clip both layers so the gap exposes even a translucent composer surface. */}
         <div className="absolute inset-0" style={paceMark?.gap}>
           <div className="absolute inset-x-0 inset-y-1.5 rounded-full bg-muted" />
-          {remaining > 0 ? (
+          {shown > 0 ? (
             <div
-              className="absolute inset-y-1.5 left-0 rounded-full"
-              style={{ width: `${remaining}%`, backgroundColor: color }}
+              className="br-usage-meter__fill absolute inset-y-1.5 left-0 rounded-full"
+              style={{ width: `${shown}%`, backgroundColor: color }}
             />
           ) : null}
         </div>
         {paceMark ? (
           <span
             aria-hidden
-            className="absolute inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+            className="br-usage-meter__tick absolute inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
             style={paceMark.tick}
           />
         ) : null}
@@ -163,8 +207,8 @@ function WindowBar({
         <div className="flex flex-col gap-0.5">
           <span className="text-foreground">
             {timeLeft !== null
-              ? gt("{remaining}% left · {timeLeft}% of the window left", { remaining, timeLeft })
-              : gt("{remaining}% left", { remaining })}
+              ? gt("{valueText} · {timeLeft}% of the window left", { valueText, timeLeft })
+              : valueText}
           </span>
           {timeLeft !== null ? (
             <span className="text-muted-foreground">
@@ -197,7 +241,8 @@ export function LimitWindows({
   readonly now: number;
   readonly compact?: boolean;
 }) {
-  const color = accentColor ?? barColor(driver);
+  const color = normalizeProviderAccentColor(accentColor) ?? barColor(driver);
+  const barMode = useSettings((settings) => settings.usage.barMode);
   const gt = useGT();
   const m = useMessages();
   return (
@@ -216,7 +261,7 @@ export function LimitWindows({
             <span className="flex min-w-0 items-center gap-2 text-xs">
               <span className="truncate text-muted-foreground">{window.label}</span>
               <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
-                {gt("{remaining}% left", { remaining: remainingPercent(window) })}
+                {barValueText(barValue(window, barMode), barMode, gt)}
               </span>
             </span>
             <WindowBar color={color} window={window} now={now} />
