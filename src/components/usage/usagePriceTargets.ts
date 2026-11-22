@@ -3,9 +3,9 @@ import type {
   ServerSettingsPatch,
   UsageModelPriceOverride,
 } from "~/contracts";
-import { msg } from "~/i18n";
+import { msg } from "~/t3-shims/gt-react";
 
-import { m } from "~/i18n";
+import { m } from "~/t3-shims/i18nMessages";
 
 export interface UsagePriceTarget {
   readonly environmentId: EnvironmentId;

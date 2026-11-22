@@ -1,6 +1,6 @@
-import { msg } from "~/i18n";
+import { msg } from "~/t3-shims/gt-react";
 
-import { m, type MessageResolver } from "~/i18n";
+import { m, type MessageResolver } from "~/t3-shims/i18nMessages";
 import {
   parseUsagePriceForm,
   usagePriceForm,

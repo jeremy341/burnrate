@@ -1,7 +1,7 @@
-import { ProviderIcon } from "~/providers/ProviderIcon";
+import { ProviderInstanceIcon } from "~/t3-shims/ProviderInstanceIcon";
 import type { UsageProviderKind } from "~/contracts";
-import { T, useGT, useLocale, useMessages } from "~/i18n";
-import { useLayoutEffect, useRef, useState } from "react";
+import { T, useGT, useLocale, useMessages } from "~/t3-shims/gt-react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 
 import type { DailyTotals, HourlyTotals } from "~/shared/usageMerge";
 import {
@@ -14,14 +14,110 @@ import { formatRelativeHourShort } from "~/shared/usageFormatCopy";
 import { cn } from "~/lib/utils";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
 import { observeResize } from "~/lib/observeResize";
+import { MARK_CLASS, markStyle } from "./usageMarkColor";
 
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 260;
 const TICK_COUNT = 4;
 const PLOT_TOP = 8;
+const PLOT_BASE = VIEW_HEIGHT - 5;
 const NONE_LOADING: ReadonlySet<UsageProviderKind> = new Set();
+const WALL_HOUR = /^\d{4}-\d{2}-\d{2}T\d{2}:00$/;
+
+/**
+ * Provider lines are always solid: the user wants every provider drawn the way it was before (a
+ * dashed Codex / Antigravity line read as broken). A provider is told apart by its colour, the legend
+ * label and the table alternative, never by a dash pattern.
+ */
+export function providerLinePattern(_provider: UsageProviderKind): string | undefined {
+  return undefined;
+}
+
+export function formatUsageHour(hour: string, timeZone: string, hour12: boolean, locale: string) {
+  // A wall-clock label is already in the report's zone. Use UTC to format it without shifting it.
+  return WALL_HOUR.test(hour)
+    ? formatHourShort(`${hour}Z`, "UTC", hour12, locale)
+    : formatHourShort(hour, timeZone, hour12, locale);
+}
+
+function hourlyChartData(
+  hours: readonly string[],
+  totals: readonly HourlyTotals[],
+  timeZone: string,
+  referenceTime: string | undefined,
+) {
+  const byPeriod = new Map(totals.map((entry) => [entry.hourStart, entry]));
+  if (!totals.some((entry) => WALL_HOUR.test(entry.hourStart))) return { periods: hours, byPeriod };
+
+  // The Rust report groups by wall hour, including the partial hour at the end of the window.
+  // Repeated hours share a single server bucket, so chart it only once.
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  });
+  const wallHours = new Set<string>();
+  const candidates = referenceTime && !hours.includes(referenceTime) ? [...hours, referenceTime] : hours;
+  const periods = candidates.filter((hour) => {
+    const parts = formatter.formatToParts(new Date(hour));
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value;
+    const wallHour = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:00`;
+    const bucket = byPeriod.get(wallHour);
+    if (byPeriod.has(hour)) return true;
+    if (wallHours.has(wallHour)) return false;
+    wallHours.add(wallHour);
+    if (bucket) byPeriod.set(hour, bucket);
+    return true;
+  });
+  return { periods, byPeriod };
+}
 
 export type UsageChartMetric = "tokens" | "cost";
+
+/**
+ * The column a key moves the chart cursor to, or `undefined` when the key is not a chart key.
+ * `null` clears the cursor (Escape). The cursor starts at the newest period.
+ */
+export function nextChartIndex(
+  key: string,
+  current: number | null,
+  count: number,
+): number | null | undefined {
+  if (count === 0) return undefined;
+  const last = count - 1;
+  switch (key) {
+    case "ArrowLeft":
+    case "ArrowDown":
+      return current === null ? last : Math.max(0, current - 1);
+    case "ArrowRight":
+    case "ArrowUp":
+      return current === null ? last : Math.min(last, current + 1);
+    case "Home":
+      return 0;
+    case "End":
+      return last;
+    case "Escape":
+      return current === null ? undefined : null;
+    default:
+      return undefined;
+  }
+}
+
+/** Index of the highest total, for the text summary. -1 when every period is empty. */
+export function peakColumnIndex(columns: readonly { readonly total: number }[]): number {
+  let best = -1;
+  let peak = 0;
+  columns.forEach((column, index) => {
+    if (column.total > peak) {
+      peak = column.total;
+      best = index;
+    }
+  });
+  return best;
+}
 
 interface UsageProviderChartProps {
   readonly providers: readonly UsageProviderKind[];
@@ -153,7 +249,7 @@ function curvePath(segments: readonly CurveSegment[]): string {
 }
 
 function areaPath(line: string) {
-  return line === "" ? "" : `${line} L${VIEW_WIDTH},${VIEW_HEIGHT} L0,${VIEW_HEIGHT} Z`;
+  return line === "" ? "" : `${line} L${VIEW_WIDTH},${PLOT_BASE} L0,${PLOT_BASE} Z`;
 }
 
 function niceScale(peak: number, count: number): { max: number; ticks: readonly number[] } {
@@ -187,7 +283,7 @@ function chartScale(
 }
 
 function valueToY(value: number, max: number) {
-  return max === 0 ? VIEW_HEIGHT : VIEW_HEIGHT - (value / max) * (VIEW_HEIGHT - PLOT_TOP);
+  return max === 0 ? PLOT_BASE : PLOT_BASE - (value / max) * (PLOT_BASE - PLOT_TOP);
 }
 
 function buildChart(
@@ -197,25 +293,26 @@ function buildChart(
   providers: readonly UsageProviderKind[],
   loadingProviders: ReadonlySet<UsageProviderKind>,
 ) {
-  const columns = buildPeriodColumns(periods, byPeriod, metric);
+  const visibleProviders = new Set(providers);
+  const columns = buildPeriodColumns(periods, byPeriod, metric).map((column) => {
+    const bands = column.bands.filter((band) => visibleProviders.has(band.provider));
+    return { bands, total: bands.reduce((sum, band) => sum + band.value, 0) };
+  });
   const scale = chartScale(columns, loadingProviders);
   const stepX = periods.length < 2 ? 0 : VIEW_WIDTH / (periods.length - 1);
   const paths = providers.map((provider) => {
-    const slot = PROVIDER_ORDER.indexOf(provider);
-    const line = curvePath(
-      smoothCurve(
-        columns.map((column, periodIndex) => ({
-          x: periodIndex * stepX,
-          y: valueToY(column.bands[slot]?.value ?? 0, scale.max),
-        })),
-      ),
-    );
+    const values = columns.map((column) => column.bands.find((band) => band.provider === provider)!.value);
+    const points = values.map((value, periodIndex) => ({
+      x: periods.length === 1 ? VIEW_WIDTH / 2 : periodIndex * stepX,
+      y: valueToY(value, scale.max),
+    }));
+    const line = curvePath(smoothCurve(points));
     return {
       provider,
-      loading: loadingProviders.has(provider),
-      total: columns.reduce((sum, column) => sum + (column.bands[slot]?.value ?? 0), 0),
+      total: values.reduce((sum, value) => sum + value, 0),
       line,
       area: areaPath(line),
+      point: points.length === 1 ? points[0] : undefined,
     };
   });
 
@@ -241,7 +338,9 @@ function UsageChartTooltip({
   return (
     <div
       ref={tooltipRef}
-      className="surface-glass pointer-events-none absolute z-10 min-w-36 max-w-full rounded-xl border border-border/50 px-2.5 py-2 text-xs shadow-lg"
+      aria-hidden
+      className="surface-glass absolute z-10 max-h-full w-max max-w-full overflow-y-auto overscroll-contain rounded-xl border border-border/50 px-2.5 py-2 text-xs shadow-lg"
+      onPointerMove={(event) => event.stopPropagation()}
       style={{
         left: "var(--usage-tooltip-left, 0px)",
         top: "var(--usage-tooltip-top, 0px)",
@@ -252,13 +351,17 @@ function UsageChartTooltip({
         const { label: providerLabel, driverKind } = PROVIDER_PRESENTATION[provider];
         return (
           <div key={provider} className="flex items-center justify-between gap-3">
-            <span className="flex items-center gap-1.5 text-muted-foreground">
-              <ProviderIcon driver={driverKind} label={providerLabel} iconClassName="size-3" />
-              {providerLabel}
+            <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+              <ProviderInstanceIcon
+                driverKind={driverKind}
+                displayName={providerLabel}
+                iconClassName="size-3"
+              />
+              <span className="wrap-anywhere">{providerLabel}</span>
             </span>
             <span
               className={cn(
-                "tabular-nums",
+                "shrink-0 tabular-nums",
                 loadingProviders.has(provider) ? "text-muted-foreground" : "text-foreground",
               )}
             >
@@ -287,8 +390,21 @@ function UsageChartPlot({
   loadingProviders,
   format,
   formatTooltipPeriod,
+  label,
+  describedBy,
+  dots,
   children,
 }: {
+  /** Single readings, drawn as HTML so the stretched plot cannot squash them. */
+  readonly dots: readonly {
+    readonly provider: UsageProviderKind;
+    readonly x: number;
+    readonly y: number;
+  }[];
+  /** Accessible name of the plot (the chart's title). */
+  readonly label: string;
+  /** Ids of the text summary and keyboard hint. */
+  readonly describedBy: string;
   readonly periods: readonly string[];
   readonly columns: readonly DayColumn[];
   readonly stepX: number;
@@ -299,6 +415,8 @@ function UsageChartPlot({
   readonly children: React.ReactNode;
 }) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  // Keyboard focus drives the same tooltip as the pointer, and is announced (the pointer's is visual only).
+  const [keyboardActive, setKeyboardActive] = useState(false);
   const plotRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const hoverPositionRef = useRef<{ x: number; y: number } | null>(null);
@@ -340,7 +458,7 @@ function UsageChartPlot({
     return observeResize([plot, tooltip], positionTooltip);
   }, [hoverIndex, positionTooltip]);
 
-  const handleMove = (event: React.MouseEvent<HTMLDivElement>) => {
+  const handleMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const plot = plotRef.current;
     if (plot === null || periods.length === 0) return;
     const bounds = plot.getBoundingClientRect();
@@ -351,19 +469,68 @@ function UsageChartPlot({
     const index = Math.round(fraction * (periods.length - 1));
     hoverPositionRef.current = { x: localX, y: localY };
     positionTooltip();
+    setKeyboardActive(false);
     setHoverIndex(Math.min(periods.length - 1, Math.max(0, index)));
   };
 
+  const moveCursor = (index: number | null) => {
+    const plot = plotRef.current;
+    if (index === null || plot === null) {
+      hoverPositionRef.current = null;
+      setHoverIndex(null);
+      return;
+    }
+    const span = Math.max(1, periods.length - 1);
+    hoverPositionRef.current = {
+      x: periods.length === 1 ? plot.clientWidth / 2 : (index / span) * plot.clientWidth,
+      y: plot.clientHeight / 3,
+    };
+    positionTooltip();
+    setKeyboardActive(true);
+    setHoverIndex(index);
+  };
+
   const hoveredPeriod = hoverIndex === null ? undefined : periods[hoverIndex];
+  const hoveredColumn = hoverIndex === null ? undefined : columns[hoverIndex];
 
   return (
     <div
       ref={plotRef}
-      className="relative h-56 flex-1"
-      onMouseMove={handleMove}
-      onMouseLeave={() => {
+      role="group"
+      tabIndex={0}
+      aria-label={label}
+      aria-describedby={describedBy}
+      className="relative h-56 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      onPointerMove={handleMove}
+      onPointerLeave={() => {
+        // A finger lifting also leaves: keep the keyboard cursor, drop only the pointer's.
+        if (keyboardActive) return;
         hoverPositionRef.current = null;
         setHoverIndex(null);
+      }}
+      onFocus={(event) => {
+        // Pointer clicks focus too; only a keyboard arrival shows the newest period at once.
+        if (event.currentTarget.matches(":focus-visible")) moveCursor(periods.length - 1);
+      }}
+      onBlur={() => {
+        setKeyboardActive(false);
+        hoverPositionRef.current = null;
+        setHoverIndex(null);
+      }}
+      onKeyDown={(event) => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        if (tooltipRef.current && (event.key === "PageUp" || event.key === "PageDown")) {
+          event.preventDefault();
+          const tooltip = tooltipRef.current;
+          tooltip.scrollTop += event.key === "PageUp" ? -tooltip.clientHeight : tooltip.clientHeight;
+          return;
+        }
+        const next = nextChartIndex(event.key, hoverIndex, periods.length);
+        if (next === undefined) return;
+        event.preventDefault();
+        // Escape only clears the tooltip; it must not also close a dialog that holds the chart.
+        if (next === null) event.stopPropagation();
+        moveCursor(next);
       }}
     >
       <svg
@@ -375,8 +542,8 @@ function UsageChartPlot({
         {children}
         {hoverIndex === null ? null : (
           <line
-            x1={hoverIndex * stepX}
-            x2={hoverIndex * stepX}
+            x1={periods.length === 1 ? VIEW_WIDTH / 2 : hoverIndex * stepX}
+            x2={periods.length === 1 ? VIEW_WIDTH / 2 : hoverIndex * stepX}
             y1={PLOT_TOP}
             y2={VIEW_HEIGHT}
             stroke="currentColor"
@@ -386,6 +553,40 @@ function UsageChartPlot({
           />
         )}
       </svg>
+
+      {dots.map(({ provider, x, y }) => (
+        <span
+          key={provider}
+          aria-hidden
+          data-point={provider}
+          className={cn(
+            "pointer-events-none absolute size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full forced-colors:[background-color:CanvasText]!",
+            MARK_CLASS,
+          )}
+          style={{
+            ...markStyle(PROVIDER_PRESENTATION[provider].color),
+            backgroundColor: "var(--usage-mark)",
+            left: `${(x / VIEW_WIDTH) * 100}%`,
+            top: `${(y / VIEW_HEIGHT) * 100}%`,
+          }}
+        />
+      ))}
+
+      <p role="status" className="sr-only">
+        {keyboardActive && hoveredPeriod !== undefined && hoveredColumn !== undefined ? <>
+          {formatTooltipPeriod(hoveredPeriod)}
+          {": "}
+          {providers
+            .map(
+              (provider) =>
+                `${PROVIDER_PRESENTATION[provider].label} ${format(
+                  hoveredColumn.bands.find((band) => band.provider === provider)?.value ?? 0,
+                )}`,
+            )
+            .join(", ")}
+          {providers.length > 1 ? `, ${format(hoveredColumn.total)}` : ""}
+        </> : null}
+      </p>
 
       {hoverIndex === null || hoveredPeriod === undefined ? null : (
         <UsageChartTooltip
@@ -417,11 +618,10 @@ export function UsageProviderChart({
   const gt = useGT();
   const locale = useLocale();
   const m = useMessages();
-  const periods = resolution === "hour" ? hours : days;
-  const totals: readonly (DailyTotals | HourlyTotals)[] = resolution === "hour" ? hourly : daily;
-  const byPeriod = new Map(
-    totals.map((entry) => ["hourStart" in entry ? entry.hourStart : entry.day, entry]),
-  );
+  const baseId = useId();
+  const { periods, byPeriod } = resolution === "hour"
+    ? hourlyChartData(hours, hourly, timeZone, referenceTime)
+    : { periods: days, byPeriod: new Map(daily.map((entry) => [entry.day, entry])) };
   const { columns, scale, paths, stepX } = buildChart(
     periods,
     byPeriod,
@@ -431,8 +631,6 @@ export function UsageProviderChart({
   );
 
   const toY = (value: number) => valueToY(value, scale.max);
-  const seriesClassName = (loading: boolean) =>
-    cn("transition-opacity", loading && "opacity-40 delay-150");
   const format = metric === "tokens" ? formatTokens : (value: number) => formatUsd(value, locale);
   const formatPeriod = (period: string) =>
     resolution === "hour"
@@ -442,9 +640,38 @@ export function UsageProviderChart({
     resolution === "hour" && referenceTime !== undefined
       ? formatRelativeHourShort(period, referenceTime, timeZone, hour12, m, locale)
       : formatPeriod(period);
+  const chartName =
+    resolution === "hour"
+      ? metric === "tokens"
+        ? gt("Hourly processed tokens by provider")
+        : gt("Hourly cost by provider")
+      : metric === "tokens"
+        ? gt("Daily processed tokens by provider")
+        : gt("Daily cost by provider");
+  const grandTotal = columns.reduce((sum, column) => sum + column.total, 0);
+  const peakIndex = peakColumnIndex(columns);
+  const peakPeriod = peakIndex < 0 ? undefined : periods[peakIndex];
+  const summaryId = `${baseId}-summary`;
+  const hintId = `${baseId}-hint`;
+  const legend = [...providers].sort(
+    (a, b) => PROVIDER_ORDER.indexOf(a) - PROVIDER_ORDER.indexOf(b),
+  );
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 flex-col gap-1">
+      <p id={summaryId} className="sr-only">
+        {peakPeriod === undefined
+          ? gt("{name}: no usage in this period.", { name: chartName })
+          : gt("{name}: {total} in total. Highest at {period}: {peak}.", {
+              name: chartName,
+              total: format(grandTotal),
+              period: formatTooltipPeriod(peakPeriod),
+              peak: format(columns[peakIndex]?.total ?? 0),
+            })}
+      </p>
+      <p id={hintId} className="sr-only">
+        {gt("Use arrow keys to move between periods, Home and End to jump, Page Up and Page Down to scroll details, and Escape to hide them.")}
+      </p>
       <div className="flex gap-2">
         <div aria-hidden className="relative h-56 w-14 shrink-0">
           {scale.labeled
@@ -468,6 +695,11 @@ export function UsageProviderChart({
           loadingProviders={loadingProviders}
           format={format}
           formatTooltipPeriod={formatTooltipPeriod}
+          label={chartName}
+          describedBy={`${summaryId} ${hintId}`}
+          dots={paths.flatMap(({ provider, point }) =>
+            point ? [{ provider, x: point.x, y: point.y }] : [],
+          )}
         >
           {scale.ticks.map((tick) => {
             const y = toY(tick);
@@ -486,26 +718,29 @@ export function UsageProviderChart({
             );
           })}
 
-          {paths.map(({ provider, loading, area }) => (
+          {paths.filter(({ area }) => area !== "").map(({ provider, area }) => (
             <path
               key={provider}
               d={area}
-              className={seriesClassName(loading)}
-              fill={PROVIDER_PRESENTATION[provider].color}
-              fillOpacity={0.12}
+              className={cn(MARK_CLASS, "forced-colors:hidden")}
+              style={{ ...markStyle(PROVIDER_PRESENTATION[provider].color), fill: "var(--usage-mark)" }}
+              fillOpacity={0.04}
             />
           ))}
-          {paths.map(({ provider, loading, line }) => (
+          {paths.map(({ provider, line, point }) => point ? null : (
             <path
               key={provider}
               d={line}
-              className={seriesClassName(loading)}
+              className={cn(MARK_CLASS, "forced-colors:[stroke:CanvasText]!")}
+              style={{ ...markStyle(PROVIDER_PRESENTATION[provider].color), stroke: "var(--usage-mark)" }}
               fill="none"
-              stroke={PROVIDER_PRESENTATION[provider].color}
               strokeWidth={2}
+              strokeDasharray={providerLinePattern(provider)}
               vectorEffect="non-scaling-stroke"
             />
           ))}
+          {/* A single reading is a dot. It is an HTML element, not an SVG circle: the plot stretches
+              (preserveAspectRatio="none") and would turn a circle into an ellipse. */}
         </UsageChartPlot>
       </div>
 
@@ -526,19 +761,26 @@ export function UsageProviderChart({
         </span>
       </div>
 
+      {legend.length > 1 ? (
+        <ul aria-label={gt("Providers")} className="flex flex-wrap gap-x-4 gap-y-1 pl-16 text-xs text-muted-foreground">
+          {legend.map((provider) => (
+            <li key={provider} className="flex min-w-0 items-center gap-1.5">
+              <svg aria-hidden className={cn("h-2 w-7 shrink-0", MARK_CLASS)} viewBox="0 0 28 8" style={markStyle(PROVIDER_PRESENTATION[provider].color)}>
+                <line x1={0} x2={28} y1={4} y2={4} strokeWidth={2} strokeDasharray={providerLinePattern(provider)} className="[stroke:var(--usage-mark)] forced-colors:[stroke:CanvasText]" />
+              </svg>
+              <span className="truncate">
+                {PROVIDER_PRESENTATION[provider].label}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       {/* The plot and its axes are hover-only; this carries the same figures for screen readers.
           sr-only sits on a wrapper: Firefox does not clip a table's caption by the table's own box. */}
       <div className="sr-only">
         <table>
-          <caption>
-            {resolution === "hour"
-              ? metric === "tokens"
-                ? gt("Hourly processed tokens by provider")
-                : gt("Hourly cost by provider")
-              : metric === "tokens"
-                ? gt("Daily processed tokens by provider")
-                : gt("Daily cost by provider")}
-          </caption>
+          <caption>{chartName}</caption>
           <thead>
             <tr>
               <th scope="col">{resolution === "hour" ? gt("Hour") : gt("Day")}</th>

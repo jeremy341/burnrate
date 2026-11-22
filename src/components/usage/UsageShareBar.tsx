@@ -39,7 +39,7 @@ export function UsageShareBar({
             <TooltipTrigger
               render={
                 <div
-                  className="h-full min-w-1 rounded-xs first:rounded-l-full last:rounded-r-full"
+                  className="h-full min-w-1 rounded-xs first:rounded-l-full last:rounded-r-full forced-colors:[background-color:CanvasText]!"
                   style={{ flex: `${segment.value} 1 0`, backgroundColor: segment.color }}
                 />
               }
@@ -52,10 +52,10 @@ export function UsageShareBar({
       </div>
       <ul aria-label={label} className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
         {visible.map((segment) => (
-          <li key={segment.label} className="flex items-center gap-1.5">
+          <li key={segment.label} className="flex min-w-0 flex-wrap items-center gap-x-1.5">
             <span
               aria-hidden
-              className="size-2 rounded-xs"
+              className="size-2 shrink-0 rounded-xs forced-colors:[background-color:CanvasText]!"
               style={{ backgroundColor: segment.color }}
             />
             <span className="text-muted-foreground">{m(segment.label)}</span>{" "}
