@@ -1,0 +1,62 @@
+# Moonshot / Kimi Open Platform - prepaid API balance (official endpoint).
+#
+# source: https://platform.kimi.ai/docs/api/balance  (international host `api.moonshot.ai`)
+#
+# Regions: the China platform exposes the exact same API at
+# https://api.moonshot.cn/v1/users/me/balance, but keys created on platform.moonshot.cn are NOT
+# valid on api.moonshot.ai (and vice versa). This definition stays on the international host so the
+# key is only ever sent to the host it was created for. For a China key, copy this file to
+# `<data>/providers.d/moonshot-cn.toml`, set `id = "moonshot-cn"` and change the host in `key_hosts`
+# and `url` to api.moonshot.cn.
+#
+# Balance is money-shaped data only: the Open Platform does not expose a percent quota window per
+# key, so this definition has no [[window]] blocks.
+
+schema = 1
+id = "moonshot"
+label = "Moonshot"
+color = "#4f46e5"
+status = "stable"
+category = "apiKey"
+key_url = "https://platform.moonshot.ai/console/api-keys"
+docs = "https://platform.kimi.ai/docs/api/balance"
+auth = "apiKey"
+key_hosts = ["api.moonshot.ai"]
+poll_seconds = 300
+plan = "Kimi Open Platform"
+
+# source: https://platform.kimi.ai/docs/api/balance
+[[request]]
+id = "balance"
+method = "GET"
+url = "https://api.moonshot.ai/v1/users/me/balance"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+
+# `available_balance` already includes cash + vouchers; the two extra rows explain the split.
+[[balance]]
+id = "available"
+label = "Available balance"
+kind = "credit"
+from = "balance"
+amount = "$.data.available_balance"
+currency = "USD"
+provenance = "official"
+
+[[balance]]
+id = "cash"
+label = "Cash"
+kind = "credit"
+from = "balance"
+amount = "$.data.cash_balance"
+currency = "USD"
+provenance = "official"
+
+[[balance]]
+id = "voucher"
+label = "Vouchers"
+kind = "credit"
+from = "balance"
+amount = "$.data.voucher_balance"
+currency = "USD"
+provenance = "official"

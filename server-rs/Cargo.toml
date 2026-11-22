@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[package.metadata.burnrate]
+# Built-in provider definitions: every server-rs/defs/*.toml is embedded by build.rs (files starting with _ are skipped).
+
 [dependencies]
 tiny_http = "0.12"
 ureq = { version = "2", features = ["json"] }
@@ -15,6 +18,12 @@ aes-gcm = "0.10"
 rand = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 chrono-tz = "0.10"
+# Shared by feature packages (add new dependencies only through the integrator, see docs/CONTRACTS.md).
+toml = "0.8"
+serde_json_path = "0.7"
+url = "2"
+regex = "1"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3

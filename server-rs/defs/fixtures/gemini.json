@@ -1,0 +1,21 @@
+{
+  "models": [
+    {
+      "name": "models/gemini-1.5-flash-001",
+      "baseModelId": "gemini-1.5-flash",
+      "version": "001",
+      "displayName": "Gemini 1.5 Flash",
+      "description": "Fast and versatile multimodal model for scaling across diverse tasks.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 8192,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens"
+      ],
+      "temperature": 1.0,
+      "topP": 0.95,
+      "topK": 64,
+      "maxTemperature": 2.0
+    }
+  ]
+}

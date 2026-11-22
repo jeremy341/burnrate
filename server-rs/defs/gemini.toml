@@ -1,0 +1,34 @@
+# Google Gemini API (AI Studio / Gemini Developer API).
+# source: https://ai.google.dev/gemini-api/docs/rate-limits
+# source: https://ai.google.dev/api/models
+# NO USAGE API: rate limits (RPM/TPM/RPD) and spend-based limits are enforced per
+# Google Cloud project and are only visible in AI Studio; there is no key-scoped
+# balance, spend or quota endpoint. Billing/spend lives in Google Cloud Billing
+# (Budgets API / BigQuery export) and quota metrics in Cloud Monitoring, both of
+# which need OAuth 2.0, not a Gemini API key. The Gemini CLI quota endpoint is
+# unofficial and needs the CLI's embedded OAuth client secret, so it is not a
+# definition either (Gemini CLI usage is covered by the local-log reader).
+# CATALOG NOTE: disabled - no key-based usage API; use a local budget + logs/proxy.
+schema = 1
+id = "gemini"
+label = "Google Gemini"
+color = "#4285F4"
+status = "disabled"
+category = "apiKey"
+key_url = "https://aistudio.google.com/apikey"
+docs = "https://ai.google.dev/gemini-api/docs/rate-limits"
+auth = "apiKey"
+key_hosts = ["generativelanguage.googleapis.com"]
+poll_seconds = 300
+plan = "Gemini API key"
+
+# Schema-only placeholder so the definition parses (1..4 requests required).
+# Never executed while status = "disabled"; only lists models and produces no
+# windows or balances (the key is valid but there is no usage data to map).
+# source: https://ai.google.dev/api-reference/models/list-models
+[[request]]
+id = "models"
+method = "GET"
+url = "https://generativelanguage.googleapis.com/v1beta/models"
+headers = { "x-goog-api-key" = "{{key}}" }
+timeout_seconds = 10

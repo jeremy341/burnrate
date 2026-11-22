@@ -1,0 +1,33 @@
+# Google Vertex AI (Gemini models on Vertex).
+# source: https://cloud.google.com/vertex-ai/docs/quotas
+# source: https://cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.timeSeries/list
+# source: https://cloud.google.com/monitoring/api/metrics_gcp
+# NO USAGE API: quota usage is exposed only through Cloud Monitoring
+# (serviceruntime.googleapis.com/quota/allocation/usage and .../quota/limit)
+# and spend only through Cloud Billing export/BigQuery. Both require OAuth 2.0
+# Application Default Credentials; the definition schema can only send an API
+# key, so this file is disabled and providers/keys are budget-based.
+# CATALOG NOTE: disabled - OAuth-only Cloud Monitoring quota; use a local budget.
+schema = 1
+id = "vertex"
+label = "Google Vertex AI"
+color = "#34A853"
+status = "disabled"
+category = "admin"
+docs = "https://cloud.google.com/vertex-ai/docs/quotas"
+# auth = "none" is a schema placeholder: Vertex needs OAuth 2.0 ADC (or a
+# service-account access token), which this definition format cannot represent.
+auth = "none"
+poll_seconds = 300
+plan = "Vertex AI"
+
+# Schema-only placeholder so the definition parses (1..4 requests required).
+# Never executed while status = "disabled"; documents the Cloud Monitoring
+# endpoint that would provide quota usage. Replace my-project with the project
+# id and supply OAuth credentials outside this file.
+# source: https://cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.timeSeries/list
+[[request]]
+id = "quota"
+method = "GET"
+url = "https://monitoring.googleapis.com/v3/projects/my-project/timeSeries?filter=metric.type%3D%22serviceruntime.googleapis.com%2Fquota%2Fallocation%2Fusage%22&view=FULL"
+timeout_seconds = 10

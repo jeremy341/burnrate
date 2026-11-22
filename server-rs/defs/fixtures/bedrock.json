@@ -1,0 +1,20 @@
+{
+  "GroupDefinitions": [],
+  "ResultsByTime": [
+    {
+      "Estimated": false,
+      "Groups": [],
+      "TimePeriod": {
+        "Start": "2026-11-01",
+        "End": "2026-12-01"
+      },
+      "Total": {
+        "UnblendedCost": {
+          "Amount": "12.34",
+          "Unit": "USD"
+        }
+      }
+    }
+  ],
+  "DimensionValueAttributes": []
+}

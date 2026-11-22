@@ -1,0 +1,9 @@
+{
+  "windows": [
+    { "id": "plan_credits", "kind": "monthly", "usedPercent": 12.5 },
+    { "id": "overage_credits", "kind": "other", "usedPercent": 5 }
+  ],
+  "balances": [
+    { "id": "overage_spend", "kind": "spend", "amount": 0.1, "currency": "USD" }
+  ]
+}

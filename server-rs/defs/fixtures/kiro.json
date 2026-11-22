@@ -1,0 +1,20 @@
+{
+  "usageBreakdownList": [
+    {
+      "resourceType": "CREDIT",
+      "currentUsageWithPrecision": 12.5,
+      "usageLimitWithPrecision": 100.0,
+      "currentOveragesWithPrecision": 2.5,
+      "overageCapWithPrecision": 50.0,
+      "overageCharges": 0.1,
+      "overageRate": 0.04,
+      "currency": "USD",
+      "nextDateReset": 1796083200,
+      "bonuses": []
+    }
+  ],
+  "overageConfiguration": {
+    "overageStatus": "ENABLED"
+  },
+  "nextDateReset": 1796083200
+}

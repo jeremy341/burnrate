@@ -1,0 +1,25 @@
+{
+  "data": {
+    "label": "burnrate-test-key",
+    "limit": 100.0,
+    "limit_remaining": 74.5,
+    "limit_reset": "monthly",
+    "usage": 25.5,
+    "usage_daily": 1.2,
+    "usage_weekly": 8.4,
+    "usage_monthly": 25.5,
+    "is_free_tier": false,
+    "is_management_key": false,
+    "effective_budget": {
+      "limit_usd": 100.0,
+      "spend_usd": 25.5,
+      "remaining_usd": 74.5,
+      "resets_at": "2026-12-01T00:00:00Z"
+    },
+    "free_model_daily_requests": {
+      "limit": 50,
+      "remaining": 38,
+      "used": 12
+    }
+  }
+}

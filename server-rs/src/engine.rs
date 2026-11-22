@@ -1,17 +1,28 @@
-use crate::pricing::{self, Category, CostSource, RateTable};
+//! Usage engine: reads agent transcripts into a row cache and answers `/api/usage` from it.
+//!
+//! The first scan of a large history takes tens of seconds, so nothing here ever makes a request wait
+//! for a scan. A background thread (`engine/scan.rs`) fills the cache provider by provider, newest files
+//! first, and publishes after every batch. `summary` answers at once from whatever is published (stale
+//! while revalidate), tagged with `scan: {state, filesDone, filesTotal}` so the UI can show honest
+//! progress. Summaries are memoised per window and the last ones are persisted, so a restart shows data
+//! immediately.
+
+mod aggregate;
+mod scan;
+#[cfg(test)]
+mod tests;
+
+use crate::pricing::{self, RateTable};
 use crate::readers::{self, Source};
 use crate::settings::Settings;
-use crate::store::{self, FileEntry, Interner, C_CACHED, C_CACHE_WRITE, C_KEY, C_OUTPUT, C_REASONING, C_SESSION, C_TS, C_UNCACHED, STRIDE};
-use crate::types::Record;
-use chrono::{TimeZone, Utc};
-use chrono_tz::Tz;
+use crate::store::{self, FileEntry, Interner, C_SESSION, STRIDE};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const LITELLM_URL: &str = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const PRICE_TTL_SECS: u64 = 24 * 60 * 60;
 /// History kept; the widest window the UI offers is 90 days.
 const HORIZON_DAYS: f64 = 100.0;
@@ -22,26 +33,134 @@ const CACHE_VERSION: u32 = 3;
 const SEP: char = '\0';
 /// Providers that repeat a message key (Claude per content block, Antigravity per retry): count it once at the maximum of each channel.
 const MAX_MERGE: [&str; 2] = ["claude", "antigravity"];
+/// A request that finds the data older than this starts a background rescan (it still answers at once).
+const REVALIDATE_AFTER_MS: f64 = 5_000.0;
+const MAX_MEMO: usize = 24;
+const PERSISTED_SUMMARIES: usize = 12;
+const SUMMARY_FILE: &str = "usage-summary-cache.json";
+const SUMMARY_FILE_VERSION: u32 = 2;
 
 struct Pricing {
     status: &'static str,
+    /// Where the document ultimately came from (litellm / openrouter / cached URL).
+    source: String,
     fetched_at: Option<String>,
     known_models: usize,
 }
 
-struct Inner {
+/// Parse a time zone name, falling back to UTC. The bool is true when the name was invalid; callers
+/// must surface that so an IANA typo does not silently mis-bucket every day/hour window.
+pub(crate) fn time_zone_or_utc(name: &str) -> (chrono_tz::Tz, bool) {
+    match name.parse::<chrono_tz::Tz>() {
+        Ok(tz) => (tz, false),
+        Err(_) => (chrono_tz::UTC, true),
+    }
+}
+
+fn warn_bad_time_zone(name: &str) {
+    eprintln!("burnrate: invalid IANA time zone '{name}'; using UTC (time windows may be misaligned)");
+}
+
+/// What one provider currently contributes: the files that survive the last listing, their rows (shared
+/// with the cache, never copied) and the figures the sources list reports.
+#[derive(Default)]
+pub(crate) struct ProviderView {
+    keys: Vec<String>,
+    rows: Vec<Arc<Vec<f64>>>,
+    /// True once a listing of this provider has completed in this process.
+    listed: bool,
+    status: &'static str,
+    message: Option<&'static str>,
+    scanned_files: usize,
+    malformed: u32,
+    distinct_sessions: usize,
+}
+
+impl ProviderView {
+    /// Providers appear in the sources list once they hold cached rows or have been listed.
+    fn reported(&self) -> bool {
+        self.listed || !self.keys.is_empty()
+    }
+}
+
+pub(crate) struct Inner {
     strings: Interner,
     cache: HashMap<String, FileEntry>,
     dirty: bool,
     rates: RateTable,
     pricing: Pricing,
     pricing_checked: Option<SystemTime>,
+    /// One per reader, in reader order.
+    views: Vec<ProviderView>,
+    /// Bumped whenever published rows or prices change; memoised summaries carry the one they were built at.
+    generation: u64,
+}
+
+#[derive(Clone)]
+struct ProviderProgress {
+    id: &'static str,
+    files_done: usize,
+    files_total: usize,
+    /// pending | scanning | done
+    state: &'static str,
+}
+
+#[derive(Clone, Default)]
+struct Progress {
+    scanning: bool,
+    files_done: usize,
+    files_total: usize,
+    providers: Vec<ProviderProgress>,
+    started_ms: f64,
+    updated_ms: f64,
+    /// A scan has run to the end in this process (the data is complete as of `last_finished_ms`).
+    completed_once: bool,
+    last_finished_ms: f64,
+}
+
+struct MemoEntry {
+    input: SummaryInput,
+    settings: Option<Settings>,
+    generation: u64,
+    value: Value,
+    used: u64,
+}
+
+#[derive(Default)]
+struct Memo {
+    entries: HashMap<String, MemoEntry>,
+    tick: u64,
+}
+
+#[derive(Clone)]
+pub struct SummaryInput {
+    pub since_day: String,
+    pub until_day: String,
+    pub time_zone: String,
+    pub hourly: bool,
+    /// Exact window bounds. When both are set, rows outside them are skipped even if their local
+    /// day is inside `since_day`..`until_day`. Used by the "past 24 hours" view.
+    pub since_time: Option<f64>,
+    pub until_time: Option<f64>,
+}
+
+pub(crate) struct Shared {
+    data_dir: PathBuf,
+    readers: Vec<Box<dyn Source>>,
+    providers: Vec<&'static str>,
+    dirs: Vec<String>,
+    inner: Mutex<Inner>,
+    progress: Mutex<Progress>,
+    memo: Mutex<Memo>,
+    scanning: AtomicBool,
+    pricing_refreshing: AtomicBool,
+    generation: AtomicU64,
+    /// The scan cache was missing or unusable at start, so only a persisted summary can be shown at once.
+    cold_start: bool,
 }
 
 pub struct Engine {
-    data_dir: PathBuf,
-    readers: Vec<Box<dyn Source>>,
-    inner: Mutex<Inner>,
+    shared: Arc<Shared>,
 }
 
 fn now_ms() -> f64 {
@@ -53,9 +172,9 @@ fn max_merge(provider: &str) -> bool {
 }
 
 /// Merges records that share a key within one file, taking the maximum of each channel.
-fn merge_within_file(records: Vec<Record>) -> Vec<Record> {
+fn merge_within_file(records: Vec<crate::types::Record>) -> Vec<crate::types::Record> {
     let mut index: HashMap<String, usize> = HashMap::new();
-    let mut out: Vec<Record> = Vec::with_capacity(records.len());
+    let mut out: Vec<crate::types::Record> = Vec::with_capacity(records.len());
     for r in records {
         let Some(key) = r.key.clone().filter(|_| max_merge(&r.provider)) else {
             out.push(r);
@@ -83,6 +202,31 @@ fn merge_within_file(records: Vec<Record>) -> Vec<Record> {
     out
 }
 
+/// Fingerprint a packed row so an exact copy in two files can be recognised. Keyless rows
+/// (bridged Codex requests) have no message key, so every channel is compared.
+fn row_fingerprint(chunk: &[f64]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for value in chunk.iter().take(STRIDE) {
+        hash = (hash ^ value.to_bits()).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// For a shared-session provider, drop only rows that are exact copies of a row in the canonical
+/// file. A session that kept growing after it was copied retains its new rows.
+fn shared_session_rows(rows: &[f64], file_index: usize, best: &HashMap<u64, (usize, usize)>, canonical: &HashMap<u64, HashSet<u64>>) -> Vec<f64> {
+    let mut kept = Vec::with_capacity(rows.len());
+    for chunk in rows.chunks_exact(STRIDE) {
+        let sid = chunk[C_SESSION].to_bits();
+        let is_canonical = best.get(&sid).is_some_and(|&(f, _)| f == file_index);
+        let duplicate = !is_canonical && canonical.get(&sid).is_some_and(|fingerprints| fingerprints.contains(&row_fingerprint(chunk)));
+        if !duplicate {
+            kept.extend_from_slice(chunk);
+        }
+    }
+    kept
+}
+
 /// Follow alias chains to their end; a cycle resolves to nothing.
 fn resolve_aliases(aliases: &HashMap<String, String>) -> HashMap<String, String> {
     let mut out = HashMap::new();
@@ -102,381 +246,361 @@ fn resolve_aliases(aliases: &HashMap<String, String>) -> HashMap<String, String>
     out
 }
 
-#[derive(Default)]
-struct Acc {
-    totals: [f64; 5],
-    cost: f64,
-    cache_savings: f64,
-    category: Category,
-    has_category: bool,
-    fast_cost: f64,
-    ultrafast_cost: f64,
-    speed_premium: f64,
-    records: u32,
-    unpriced_records: u32,
-    unpriced_tokens: f64,
-    reported_records: u32,
-    priced_records: u32,
-    sessions: HashSet<u64>,
-    day: String,
-    hour_start: Option<String>,
-    provider: String,
-    model: String,
+/// Deleting a transcript leaves its interned strings referenced by no remaining row. Rebuild the
+/// interner from the ids still in use and rewrite those id columns everywhere they are held. The
+/// published views share the cache's row buffers, so they are rebuilt by the caller afterwards.
+/// Returns true when anything was rewritten.
+fn prune_interner(inner: &mut Inner) -> bool {
+    let mut live: HashSet<u32> = HashSet::new();
+    for entry in inner.cache.values() {
+        for chunk in entry.rows.chunks_exact(STRIDE) {
+            for c in [store::C_PROVIDER, store::C_MODEL, store::C_RATE_MODEL, C_SESSION] {
+                if chunk[c] >= 0.0 {
+                    live.insert(chunk[c] as u32);
+                }
+            }
+        }
+    }
+    if live.len() >= inner.strings.strings.len() {
+        return false; // nothing orphaned
+    }
+    let remap = inner.strings.retain_ids(&live);
+    for entry in inner.cache.values_mut() {
+        let mut rows = entry.rows.as_ref().clone();
+        for chunk in rows.chunks_exact_mut(STRIDE) {
+            for c in [store::C_PROVIDER, store::C_MODEL, store::C_RATE_MODEL, C_SESSION] {
+                if chunk[c] >= 0.0 {
+                    if let Some(&new) = remap.get(&(chunk[c] as u32)) {
+                        chunk[c] = new as f64;
+                    }
+                }
+            }
+        }
+        entry.rows = Arc::new(rows);
+    }
+    inner.dirty = true;
+    true
 }
 
-pub struct SummaryInput {
-    pub since_day: String,
-    pub until_day: String,
-    pub time_zone: String,
-    pub hourly: bool,
+/// Everything in `Settings` that changes a summary, in a stable text form.
+fn settings_fingerprint(settings: &Settings) -> String {
+    let mut prices: Vec<_> = settings.prices.iter().collect();
+    prices.sort_by(|a, b| a.0.cmp(b.0));
+    let mut aliases: Vec<_> = settings.aliases.iter().collect();
+    aliases.sort_by(|a, b| a.0.cmp(b.0));
+    format!("{prices:?}{aliases:?}")
+}
+
+fn memo_key(input: &SummaryInput, settings: &Settings) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        input.since_day,
+        input.until_day,
+        input.since_time.map_or_else(String::new, |v| format!("{v:.0}")),
+        input.until_time.map_or_else(String::new, |v| format!("{v:.0}")),
+        input.time_zone,
+        input.hourly,
+        settings_fingerprint(settings)
+    )
+}
+
+fn pricing_from(chain: &pricing::PricingChain) -> Option<(RateTable, Pricing)> {
+    chain.document.as_ref()?;
+    let rates = pricing::rate_table_from(chain);
+    let age_ms = chain.fetched_at.as_deref().and_then(crate::types::parse_rfc3339_ms).map(|at| (now_ms() - at).max(0.0));
+    let fresh = age_ms.is_some_and(|age| age <= PRICE_TTL_SECS as f64 * 1000.0);
+    let status = match chain.source {
+        pricing::PricingSource::Unavailable => "unavailable",
+        _ if fresh => "fresh",
+        _ => "cached",
+    };
+    let known_models = rates.len();
+    Some((rates, Pricing { status, source: chain.source.as_str().to_string(), fetched_at: chain.fetched_at.clone(), known_models }))
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn progress_lock(&self) -> MutexGuard<'_, Progress> {
+        self.progress.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn memo_lock(&self) -> MutexGuard<'_, Memo> {
+        self.memo.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn progress_json(&self) -> Value {
+        let p = self.progress_lock().clone();
+        json!({
+            "state": if p.scanning { "scanning" } else { "idle" },
+            "filesDone": p.files_done,
+            "filesTotal": p.files_total,
+            "completedOnce": p.completed_once,
+            "providers": p.providers.iter().map(|x| json!({"id": x.id, "state": x.state, "filesDone": x.files_done, "filesTotal": x.files_total})).collect::<Vec<_>>(),
+            "startedAt": (p.started_ms > 0.0).then_some(p.started_ms),
+            "finishedAt": (p.last_finished_ms > 0.0).then_some(p.last_finished_ms),
+        })
+    }
+
+    /// Start a background scan unless one is running. Returns whether a thread was started.
+    fn kick(self: &Arc<Self>) -> bool {
+        if self.scanning.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        let shared = Arc::clone(self);
+        let started = std::thread::Builder::new().name("burnrate-usage-scan".into()).spawn(move || shared.run_scan(&mut || {}));
+        if started.is_err() {
+            self.scanning.store(false, Ordering::Release);
+            return false;
+        }
+        true
+    }
+
+    fn kick_if_stale(self: &Arc<Self>) {
+        let (completed, finished) = {
+            let p = self.progress_lock();
+            (p.completed_once, p.last_finished_ms)
+        };
+        if !completed || now_ms() - finished >= REVALIDATE_AFTER_MS {
+            self.kick();
+        }
+    }
+
+    fn with_scan(&self, mut value: Value) -> Value {
+        value["scan"] = self.progress_json();
+        value
+    }
+
+    fn summary(self: &Arc<Self>, input: &SummaryInput, settings: &Settings) -> Value {
+        self.kick_if_stale();
+        let key = memo_key(input, settings);
+        let generation = self.generation.load(Ordering::Acquire);
+        let completed_once = self.progress_lock().completed_once;
+        {
+            let mut memo = self.memo_lock();
+            memo.tick += 1;
+            let tick = memo.tick;
+            if let Some(entry) = memo.entries.get_mut(&key) {
+                entry.used = tick;
+                if entry.generation == generation {
+                    return self.with_scan(entry.value.clone());
+                }
+                // No scan cache yet: a persisted answer beats a partial one until the first scan completes.
+                if self.cold_start && !completed_once && entry.settings.is_none() {
+                    let mut value = entry.value.clone();
+                    value["stale"] = json!(true);
+                    return self.with_scan(value);
+                }
+            }
+        }
+        let (value, built_at) = {
+            let inner = self.lock();
+            (aggregate::compute(&inner, &self.providers, &self.dirs, input, settings), inner.generation)
+        };
+        self.remember(key, input, settings, built_at, value.clone());
+        self.with_scan(value)
+    }
+
+    fn remember(&self, key: String, input: &SummaryInput, settings: &Settings, generation: u64, value: Value) {
+        let mut memo = self.memo_lock();
+        memo.tick += 1;
+        let used = memo.tick;
+        if memo.entries.len() >= MAX_MEMO && !memo.entries.contains_key(&key) {
+            if let Some(oldest) = memo.entries.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()) {
+                memo.entries.remove(&oldest);
+            }
+        }
+        memo.entries.insert(key, MemoEntry { input: input.clone(), settings: Some(settings.clone()), generation, value, used });
+    }
+
+    /// Recompute every remembered window against the freshly published rows and persist the latest ones,
+    /// so switching window is a memo hit and a restart can show the last answer at once.
+    fn prewarm_and_persist(&self) {
+        let jobs: Vec<(String, SummaryInput, Settings)> = self
+            .memo_lock()
+            .entries
+            .iter()
+            .filter_map(|(k, e)| e.settings.clone().map(|s| (k.clone(), e.input.clone(), s)))
+            .collect();
+        for (key, input, settings) in jobs {
+            let (value, generation) = {
+                let inner = self.lock();
+                (aggregate::compute(&inner, &self.providers, &self.dirs, &input, &settings), inner.generation)
+            };
+            self.remember(key, &input, &settings, generation, value);
+        }
+        self.persist_summaries();
+    }
+
+    fn persist_summaries(&self) {
+        let mut entries: Vec<(u64, Value)> = {
+            let memo = self.memo_lock();
+            memo.entries
+                .iter()
+                .filter(|(_, e)| e.settings.is_some())
+                .map(|(k, e)| {
+                    (
+                        e.used,
+                        json!({"key": k, "sinceDay": e.input.since_day, "untilDay": e.input.until_day, "sinceTime": e.input.since_time, "untilTime": e.input.until_time, "timeZone": e.input.time_zone, "hourly": e.input.hourly, "value": e.value}),
+                    )
+                })
+                .collect()
+        };
+        if entries.is_empty() {
+            return;
+        }
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        entries.truncate(PERSISTED_SUMMARIES);
+        let body = json!({"version": SUMMARY_FILE_VERSION, "savedAt": now_ms(), "entries": entries.into_iter().map(|(_, v)| v).collect::<Vec<_>>()});
+        let path = self.data_dir.join(SUMMARY_FILE);
+        let _ = std::fs::create_dir_all(&self.data_dir);
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, serde_json::to_vec(&body).unwrap_or_default()).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
+    /// Persisted summaries wait in the memo at generation 0 with no settings; the first live compute replaces them.
+    fn load_summaries(&self) {
+        let Ok(bytes) = std::fs::read(self.data_dir.join(SUMMARY_FILE)) else { return };
+        let Ok(doc) = serde_json::from_slice::<Value>(&bytes) else { return };
+        if doc["version"].as_u64() != Some(u64::from(SUMMARY_FILE_VERSION)) {
+            return;
+        }
+        let mut memo = self.memo_lock();
+        for item in doc["entries"].as_array().into_iter().flatten() {
+            let (Some(key), Some(since), Some(until), Some(tz)) = (item["key"].as_str(), item["sinceDay"].as_str(), item["untilDay"].as_str(), item["timeZone"].as_str()) else { continue };
+            if !item["value"].is_object() {
+                continue;
+            }
+            let input = SummaryInput {
+                since_day: since.to_string(),
+                until_day: until.to_string(),
+                time_zone: tz.to_string(),
+                hourly: item["hourly"].as_bool().unwrap_or(false),
+                since_time: item["sinceTime"].as_f64(),
+                until_time: item["untilTime"].as_f64(),
+            };
+            memo.entries.insert(key.to_string(), MemoEntry { input, settings: None, generation: 0, value: item["value"].clone(), used: 0 });
+        }
+    }
+
+    /// The price document refresh can hit the network, so it never runs inside a scan or under a lock.
+    fn refresh_pricing_if_due(self: &Arc<Self>) {
+        {
+            let inner = self.lock();
+            if inner.pricing_checked.is_some_and(|t| t.elapsed().map_or(false, |e| e < Duration::from_secs(PRICE_TTL_SECS))) {
+                return;
+            }
+        }
+        if self.pricing_refreshing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let shared = Arc::clone(self);
+        let spawned = std::thread::Builder::new().name("burnrate-pricing".into()).spawn(move || {
+            // The documented chain (LiteLLM -> OpenRouter -> stale cache) runs here, off every request path.
+            let chain = pricing::load_chain(&shared.data_dir, &pricing::UreqFetcher, false);
+            {
+                let mut inner = shared.lock();
+                inner.pricing_checked = Some(SystemTime::now());
+                if let Some((rates, info)) = pricing_from(&chain) {
+                    inner.rates = rates;
+                    inner.pricing = info;
+                    inner.generation += 1;
+                    shared.generation.store(inner.generation, Ordering::Release);
+                }
+            }
+            shared.pricing_refreshing.store(false, Ordering::Release);
+        });
+        if spawned.is_err() {
+            self.pricing_refreshing.store(false, Ordering::Release);
+        }
+    }
 }
 
 impl Engine {
     pub fn new(data_dir: PathBuf) -> Engine {
-        let (strings, cache) = store::load(&data_dir.join("usage-scan-cache.bin"), CACHE_VERSION).unwrap_or_else(|| (Interner::default(), HashMap::new()));
-        Engine {
-            data_dir,
-            readers: readers::all(),
-            inner: Mutex::new(Inner {
-                strings,
-                cache,
-                dirty: false,
-                rates: RateTable::default(),
-                pricing: Pricing { status: "unavailable", fetched_at: None, known_models: 0 },
-                pricing_checked: None,
-            }),
+        Engine::with_readers(data_dir, readers::all())
+    }
+
+    pub(crate) fn with_readers(data_dir: PathBuf, readers: Vec<Box<dyn Source>>) -> Engine {
+        let loaded = store::load(&data_dir.join("usage-scan-cache.bin"), CACHE_VERSION);
+        let cold_start = loaded.as_ref().map_or(true, |(_, files)| files.is_empty());
+        let (strings, cache) = loaded.unwrap_or_else(|| (Interner::default(), HashMap::new()));
+        let providers: Vec<&'static str> = readers.iter().map(|r| r.provider()).collect();
+        let dirs: Vec<String> = readers.iter().map(|r| r.dir().display().to_string()).collect();
+        // Cached prices (any age) are read here; the network refresh runs in the background.
+        let cached_prices = pricing::load_cached(&data_dir);
+        let (rates, price_info, checked) = match pricing_from(&cached_prices) {
+            Some((rates, info)) => {
+                let checked = (info.status == "fresh").then(SystemTime::now);
+                (rates, info, checked)
+            }
+            None => (RateTable::default(), Pricing { status: "unavailable", source: pricing::LITELLM_URL.to_string(), fetched_at: None, known_models: 0 }, None),
+        };
+        let mut views: Vec<ProviderView> = providers.iter().map(|_| ProviderView::default()).collect();
+        for (index, provider) in providers.iter().enumerate() {
+            let prefix = format!("{provider}{SEP}");
+            let mut keys: Vec<String> = cache.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+            keys.sort();
+            views[index].keys = keys;
         }
+        let mut inner = Inner { strings, cache, dirty: false, rates, pricing: price_info, pricing_checked: checked, views, generation: 1 };
+        for index in 0..providers.len() {
+            scan::publish(&mut inner, index, providers[index], readers[index].shared_sessions(), false);
+        }
+        let generation = inner.generation;
+        let progress = Progress {
+            providers: providers.iter().map(|id| ProviderProgress { id, files_done: 0, files_total: 0, state: "pending" }).collect(),
+            ..Progress::default()
+        };
+        let shared = Arc::new(Shared {
+            data_dir,
+            readers,
+            providers,
+            dirs,
+            inner: Mutex::new(inner),
+            progress: Mutex::new(progress),
+            memo: Mutex::new(Memo::default()),
+            scanning: AtomicBool::new(false),
+            pricing_refreshing: AtomicBool::new(false),
+            generation: AtomicU64::new(generation),
+            cold_start,
+        });
+        shared.load_summaries();
+        Engine { shared }
     }
 
     pub fn reader_dir(&self, provider: &str) -> Option<PathBuf> {
-        self.readers.iter().find(|r| r.provider() == provider).map(|r| r.dir())
+        self.shared.readers.iter().find(|r| r.provider() == provider).map(|r| r.dir())
     }
 
-    fn ensure_pricing(&self, inner: &mut Inner) {
-        if inner.pricing_checked.is_some_and(|t| t.elapsed().map_or(false, |e| e < Duration::from_secs(PRICE_TTL_SECS))) {
-            return;
-        }
-        inner.pricing_checked = Some(SystemTime::now());
-        let file = self.data_dir.join("pricing-cache.json");
-        let mut document: Option<Value> = None;
-        let mut fetched_at: Option<String> = None;
-        if let Ok(text) = std::fs::read_to_string(&file) {
-            if let Ok(saved) = serde_json::from_str::<Value>(&text) {
-                fetched_at = saved.get("fetchedAt").and_then(Value::as_str).map(str::to_string);
-                document = saved.get("document").cloned();
-            }
-        }
-        let stale = match &fetched_at {
-            None => true,
-            Some(t) => crate::types::parse_rfc3339_ms(t).map_or(true, |ms| now_ms() - ms > PRICE_TTL_SECS as f64 * 1000.0),
-        };
-        let mut status = if document.is_some() { "cached" } else { "unavailable" };
-        if stale {
-            let fetched = ureq::get(LITELLM_URL).timeout(Duration::from_secs(20)).call().ok().and_then(|r| r.into_json::<Value>().ok());
-            if let Some(doc) = fetched {
-                let at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                let _ = std::fs::create_dir_all(&self.data_dir);
-                let _ = std::fs::write(&file, serde_json::to_vec(&json!({"fetchedAt": at, "document": doc})).unwrap_or_default());
-                document = Some(doc);
-                fetched_at = Some(at);
-                status = "fresh";
-            }
-        }
-        if let Some(doc) = document {
-            inner.rates = pricing::parse_rate_table(&doc);
-            inner.pricing = Pricing { status, fetched_at, known_models: inner.rates.len() };
-        }
+    /// Begin the background transcript scan now (startup warm-up). Idempotent; never blocks.
+    pub fn start_scan(&self) {
+        self.shared.kick();
     }
 
-    fn scan(&self, inner: &mut Inner) -> (Vec<(String, Vec<f64>)>, Vec<Value>) {
-        let since = now_ms() - HORIZON_DAYS * DAY_MS;
-        let mut scanned: Vec<(String, Vec<f64>)> = Vec::new();
-        let mut sources: Vec<Value> = Vec::new();
-        for reader in &self.readers {
-            let provider = reader.provider();
-            let files = reader.files();
-            let mut seen: HashSet<String> = HashSet::new();
-            let mut malformed = 0u32;
-            let mut status = if files.is_empty() { "missing" } else { "ok" };
-            let mut message: Option<&str> = if files.is_empty() { Some("Nothing found on this computer.") } else { None };
-            let mut keys: Vec<(String, String)> = Vec::new(); // (cache key, path)
-            // Files changed since the cached read are parsed in parallel, a batch at a time to bound memory.
-            let mut stale_files: Vec<(String, &readers::FileInfo)> = Vec::new();
-            for file in &files {
-                let key = format!("{provider}{SEP}{}", file.path.display());
-                seen.insert(key.clone());
-                // Files untouched since before the history window cannot hold records inside it.
-                if file.mtime_ms < since {
-                    continue;
-                }
-                let fresh = inner.cache.get(&key).is_some_and(|e| e.size == file.size && e.mtime_ms == file.mtime_ms);
-                if !fresh {
-                    stale_files.push((key.clone(), file));
-                }
-                keys.push((key, file.path.display().to_string()));
-            }
-            let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 8);
-            let mut failed: HashSet<String> = HashSet::new();
-            for batch in stale_files.chunks(64) {
-                let next = std::sync::atomic::AtomicUsize::new(0);
-                let results: Mutex<Vec<(usize, Result<crate::types::ReadResult, String>)>> = Mutex::new(Vec::new());
-                std::thread::scope(|scope| {
-                    for _ in 0..workers.min(batch.len()) {
-                        scope.spawn(|| loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some((_, file)) = batch.get(i) else { break };
-                            let result = reader.read(&file.path, since);
-                            results.lock().unwrap_or_else(|e| e.into_inner()).push((i, result));
-                        });
-                    }
-                });
-                for (i, result) in results.into_inner().unwrap_or_default() {
-                    let (key, file) = &batch[i];
-                    match result {
-                        Ok(read) => {
-                            let rows = store::pack(&merge_within_file(read.records), &mut inner.strings);
-                            inner.cache.insert(key.clone(), FileEntry { size: file.size, mtime_ms: file.mtime_ms, malformed: read.malformed, rows });
-                            inner.dirty = true;
-                        }
-                        Err(_) => {
-                            failed.insert(key.clone());
-                            status = "partial";
-                            message = Some("Some files could not be read.");
-                        }
-                    }
-                }
-            }
-            keys.retain(|(key, _)| !failed.contains(key));
-            for (key, _) in &keys {
-                malformed += inner.cache[key].malformed;
-            }
-            // A session moved to an archive can sit in two files: keep the copy with the most records.
-            let mut best: HashMap<u64, (usize, usize)> = HashMap::new(); // session id bits -> (file index, count)
-            if reader.shared_sessions() {
-                for (fi, (key, _)) in keys.iter().enumerate() {
-                    let rows = &inner.cache[key].rows;
-                    let mut counts: HashMap<u64, usize> = HashMap::new();
-                    for o in (C_SESSION..rows.len()).step_by(STRIDE) {
-                        *counts.entry(rows[o].to_bits()).or_default() += 1;
-                    }
-                    for (sid, count) in counts {
-                        if best.get(&sid).map_or(true, |&(_, c)| count > c) {
-                            best.insert(sid, (fi, count));
-                        }
-                    }
-                }
-            }
-            let mut sessions: HashSet<u64> = HashSet::new();
-            let empty_session = inner.strings.id("") as f64;
-            for (fi, (key, _)) in keys.iter().enumerate() {
-                let entry = &inner.cache[key];
-                let rows: Vec<f64> = if reader.shared_sessions() {
-                    // Rows of sessions whose best copy is another file are dropped.
-                    let mut kept = Vec::with_capacity(entry.rows.len());
-                    for chunk in entry.rows.chunks_exact(STRIDE) {
-                        if best.get(&chunk[C_SESSION].to_bits()).is_some_and(|&(f, _)| f == fi) {
-                            kept.extend_from_slice(chunk);
-                        }
-                    }
-                    kept
-                } else {
-                    entry.rows.clone()
-                };
-                for o in (C_SESSION..rows.len()).step_by(STRIDE) {
-                    if rows[o] != empty_session {
-                        sessions.insert(rows[o].to_bits());
-                    }
-                }
-                scanned.push((provider.to_string(), rows));
-            }
-            let prefix = format!("{provider}{SEP}");
-            let stale: Vec<String> = inner.cache.keys().filter(|k| k.starts_with(&prefix) && !seen.contains(*k)).cloned().collect();
-            if !stale.is_empty() {
-                inner.dirty = true;
-            }
-            for k in stale {
-                inner.cache.remove(&k);
-            }
-            sources.push(json!({
-                "fingerprint": {"hostId": "local", "provider": provider, "resolvedHomePath": reader.dir().display().to_string(), "volumeId": ""},
-                "status": status,
-                "scannedFiles": files.len(),
-                "skippedFiles": 0,
-                "malformedRecords": malformed,
-                "distinctSessions": sessions.len(),
-                "message": message,
-            }));
-        }
-        if inner.dirty {
-            inner.dirty = false;
-            store::save(&self.data_dir.join("usage-scan-cache.bin"), CACHE_VERSION, &inner.strings, &inner.cache);
-        }
-        (scanned, sources)
-    }
-
+    /// Answer from whatever is published right now and revalidate in the background. Never waits for a scan.
     pub fn summary(&self, input: &SummaryInput, settings: &Settings) -> Value {
-        let started = now_ms();
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let inner = &mut *guard;
-        let aliases = resolve_aliases(&settings.aliases);
-        self.ensure_pricing(inner);
-        let (files, sources) = self.scan(inner);
-        let overrides = if settings.prices.is_empty() { None } else { Some(pricing::override_table(&settings.prices)) };
-        let tz: Tz = input.time_zone.parse().unwrap_or(chrono_tz::UTC);
-        let mut day_slots: HashMap<i64, String> = HashMap::new();
-        let mut day_of = |ms: f64| -> String {
-            let slot = (ms / QUARTER_HOUR_MS).floor() as i64;
-            day_slots
-                .entry(slot)
-                .or_insert_with(|| tz.timestamp_millis_opt((slot as f64 * QUARTER_HOUR_MS) as i64).single().map_or_else(String::new, |d| d.format("%Y-%m-%d").to_string()))
-                .clone()
-        };
+        self.shared.summary(input, settings)
+    }
 
-        // Rows with a key can appear in several files. Keys of "max merge" providers are first collected
-        // at the maximum of each channel; every key then counts once.
-        let mut maxed: HashMap<u64, [f64; 5]> = HashMap::new();
-        for (provider, rows) in &files {
-            if !max_merge(provider) {
-                continue;
-            }
-            for chunk in rows.chunks_exact(STRIDE) {
-                let key = chunk[C_KEY];
-                if key.is_nan() {
-                    continue;
-                }
-                let vals = [chunk[C_UNCACHED], chunk[C_CACHED], chunk[C_CACHE_WRITE], chunk[C_OUTPUT], chunk[C_REASONING]];
-                maxed
-                    .entry(key.to_bits())
-                    .and_modify(|held| (0..5).for_each(|c| held[c] = held[c].max(vals[c])))
-                    .or_insert(vals);
-            }
+    /// Like `summary`, but first waits (up to `timeout`) for the first scan of this process to finish, for
+    /// callers such as budgets that must not act on a partial total.
+    #[allow(dead_code)]
+    pub fn summary_settled(&self, input: &SummaryInput, settings: &Settings, timeout: Duration) -> Value {
+        let deadline = std::time::Instant::now() + timeout;
+        self.shared.kick_if_stale();
+        while !self.shared.progress_lock().completed_once && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
         }
-        let mut counted: HashSet<u64> = HashSet::new();
-        let mut buckets: HashMap<String, Acc> = HashMap::new();
-        for (provider, rows) in &files {
-            let merge = max_merge(provider);
-            for i in 0..rows.len() / STRIDE {
-                let o = i * STRIDE;
-                let ts = rows[o + C_TS];
-                let day = day_of(ts);
-                if day < input.since_day || day > input.until_day {
-                    continue;
-                }
-                let key = rows[o + C_KEY];
-                if !key.is_nan() && !counted.insert(key.to_bits()) {
-                    continue;
-                }
-                let mut r = store::unpack(rows, i, &inner.strings);
-                if merge && !key.is_nan() {
-                    if let Some(m) = maxed.get(&key.to_bits()) {
-                        r.uncached = m[0];
-                        r.cached = m[1];
-                        r.cache_write = m[2];
-                        r.output = m[3];
-                        r.reasoning = m[4];
-                    }
-                }
-                // A model name mapped to another is counted and priced as that one.
-                if let Some(target) = aliases.get(&r.model) {
-                    r.model = target.clone();
-                    r.rate_model = None;
-                }
-                let hour = input.hourly.then(|| tz.timestamp_millis_opt(ts as i64).single().map_or_else(|| "00".into(), |d| d.format("%H").to_string()));
-                let bucket_key = format!("{day}|{}|{}|{}", hour.as_deref().unwrap_or(""), r.provider, r.model);
-                let b = buckets.entry(bucket_key).or_insert_with(|| Acc {
-                    day: day.clone(),
-                    hour_start: hour.as_ref().map(|h| format!("{day}T{h}:00")),
-                    provider: r.provider.clone(),
-                    model: r.model.clone(),
-                    ..Acc::default()
-                });
-                let priced = pricing::price(&inner.rates, &r, overrides.as_ref());
-                for (t, v) in b.totals.iter_mut().zip([r.uncached, r.cached, r.cache_write, r.output, r.reasoning]) {
-                    *t += v;
-                }
-                b.cost += priced.cost;
-                b.cache_savings += pricing::cache_savings(&inner.rates, &r, overrides.as_ref());
-                if let Some(c) = priced.category {
-                    b.has_category = true;
-                    b.category.input += c.input;
-                    b.category.cache_read += c.cache_read;
-                    b.category.cache_write += c.cache_write;
-                    b.category.output += c.output;
-                }
-                if r.speed == 1 {
-                    b.fast_cost += priced.cost;
-                }
-                if r.speed == 2 {
-                    b.ultrafast_cost += priced.cost;
-                }
-                b.speed_premium += priced.speed_premium;
-                b.records += 1;
-                match priced.source {
-                    CostSource::Unpriced => {
-                        b.unpriced_records += 1;
-                        b.unpriced_tokens += r.total_tokens();
-                    }
-                    CostSource::ProviderReported => b.reported_records += 1,
-                    CostSource::ModelPriced => b.priced_records += 1,
-                }
-                if !r.session.is_empty() {
-                    b.sessions.insert(rows[o + C_SESSION].to_bits());
-                }
-            }
-        }
-        let mut out: Vec<Acc> = buckets.into_values().collect();
-        out.sort_by(|a, b| {
-            (a.day.as_str(), a.hour_start.as_deref().unwrap_or(""), a.provider.as_str(), a.model.as_str())
-                .cmp(&(b.day.as_str(), b.hour_start.as_deref().unwrap_or(""), b.provider.as_str(), b.model.as_str()))
-        });
-        let buckets_json: Vec<Value> = out
-            .iter()
-            .map(|b| {
-                let mut v = json!({
-                    "day": b.day,
-                    "provider": b.provider,
-                    "model": b.model,
-                    "totals": {
-                        "uncachedInputTokens": b.totals[0], "cachedInputTokens": b.totals[1], "cacheCreationTokens": b.totals[2],
-                        "outputTokens": b.totals[3], "reasoningTokens": b.totals[4],
-                    },
-                    "costUsd": b.cost,
-                    "cacheSavingsUsd": b.cache_savings,
-                    "costSource": if b.unpriced_records == b.records { "unpriced" } else if b.reported_records > 0 && b.priced_records == 0 { "providerReported" } else { "modelPriced" },
-                    "records": b.records,
-                    "unpricedRecords": b.unpriced_records,
-                    "unpricedTokens": b.unpriced_tokens,
-                    "sessions": b.sessions.len(),
-                });
-                let m = v.as_object_mut().unwrap();
-                if let Some(h) = &b.hour_start {
-                    m.insert("hourStart".into(), json!(h));
-                }
-                if b.has_category {
-                    m.insert("categoryCostUsd".into(), json!({"input": b.category.input, "cacheRead": b.category.cache_read, "cacheWrite": b.category.cache_write, "output": b.category.output}));
-                }
-                if b.fast_cost > 0.0 {
-                    m.insert("fastCostUsd".into(), json!(b.fast_cost));
-                }
-                if b.ultrafast_cost > 0.0 {
-                    m.insert("ultrafastCostUsd".into(), json!(b.ultrafast_cost));
-                }
-                if b.speed_premium > 0.0 {
-                    m.insert("speedPremiumUsd".into(), json!(b.speed_premium));
-                }
-                v
-            })
-            .collect();
-        json!({
-            "contractVersion": 6,
-            "readAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            "timeZone": input.time_zone,
-            "sinceDay": input.since_day,
-            "untilDay": input.until_day,
-            "buckets": buckets_json,
-            "sources": sources,
-            "pricing": {"status": inner.pricing.status, "source": LITELLM_URL, "fetchedAt": inner.pricing.fetched_at, "knownModels": inner.pricing.known_models},
-            "scanDurationMs": (now_ms() - started) as u64,
-        })
+        self.shared.summary(input, settings)
+    }
+
+    /// `GET /api/usage/progress`: cheap, never touches the row data.
+    pub fn progress(&self) -> Value {
+        self.shared.progress_json()
     }
 }

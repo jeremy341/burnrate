@@ -1,0 +1,27 @@
+schema = 1
+id = "perplexity"
+label = "Perplexity"
+color = "#20808D"
+# NO USAGE API: the Analytics API requires a separate org-admin analytics key and
+# exposes credits USED only, not a remaining balance. Credit balances live in the
+# console behind a session cookie and consumer-plan credits are cookie-only.
+# A normal inference key has no balance or quota endpoint.
+# CATALOG NOTE: disabled - no key-based balance; use a local budget + log reader.
+# source: https://docs.perplexity.ai/docs/admin/computer-analytics-api
+status = "disabled"
+category = "apiKey"
+key_url = "https://www.perplexity.ai/settings/api"
+docs = "https://docs.perplexity.ai/docs/admin/computer-analytics-api"
+auth = "apiKey"
+key_hosts = ["api.perplexity.ai"]
+poll_seconds = 300
+
+# Schema-only placeholder so the definition parses (1..4 requests required).
+# Never executed while status = "disabled"; produces no windows or balances.
+# source: https://docs.perplexity.ai/api-reference/models-get
+[[request]]
+id = "models"
+method = "GET"
+url = "https://api.perplexity.ai/v1/models"
+headers = { Authorization = "Bearer {{key}}" }
+timeout_seconds = 10

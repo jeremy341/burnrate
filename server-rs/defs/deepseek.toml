@@ -1,0 +1,36 @@
+# DeepSeek provider definition (schema: docs/CONTRACTS.md section 4).
+# Built only from DeepSeek's official API reference; no live API calls were made.
+# source: https://api-docs.deepseek.com/api/get-user-balance
+
+schema = 1
+id = "deepseek"
+label = "DeepSeek"
+color = "#4d6bfe"
+status = "stable"          # [V] official docs (see source comment above)
+category = "apiKey"
+key_url = "https://platform.deepseek.com/api_keys"
+docs = "https://api-docs.deepseek.com/api/get-user-balance"
+auth = "apiKey"
+key_hosts = ["api.deepseek.com"]   # the key is only ever sent to this host
+poll_seconds = 300              # balance endpoint: 5 min (research/03 section 8.4)
+
+[[request]]
+id = "balance"
+method = "GET"
+url = "https://api.deepseek.com/user/balance"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+
+[[balance]]
+# One balance_infos entry per currency; `total_balance` is granted + topped up.
+# Amounts arrive as decimal strings ("110.00") per the official docs; the
+# engine coerces numeric strings (CONTRACT_ISSUE: string coercion is not
+# spelled out in the v1 extraction rules of CONTRACTS.md section 4).
+# `is_available = false` means the balance is exhausted, not "0% used".
+id = "deepseek-balance"
+label = "DeepSeek balance"
+kind = "credit"
+from = "balance"
+amount = "$.balance_infos[0].total_balance"
+currency = { path = "$.balance_infos[0].currency" }
+provenance = "official"

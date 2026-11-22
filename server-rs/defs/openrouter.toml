@@ -1,0 +1,77 @@
+# OpenRouter provider definition (schema: docs/CONTRACTS.md section 4).
+# Built only from OpenRouter's official API reference; no live API calls were made.
+# source: https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key
+# source (credits, management key only): https://openrouter.ai/docs/api/api-reference/credits/get-credits
+
+schema = 1
+id = "openrouter"
+label = "OpenRouter"
+color = "#6467f2"
+status = "stable"          # [V] official docs (see source comments above)
+category = "apiKey"
+key_url = "https://openrouter.ai/settings/keys"
+docs = "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key"
+auth = "apiKey"
+key_hosts = ["openrouter.ai"]   # the key is only ever sent to this host
+poll_seconds = 300              # balance/cap endpoints: 5 min (research/03 section 8.4)
+plan = "OpenRouter key"
+
+[[request]]
+id = "key"
+method = "GET"
+url = "https://openrouter.ai/api/v1/key"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+
+[[request]]
+# Management keys only: a normal inference key gets 401/403 here, so this
+# request must be skipped without failing the whole probe.
+# CONTRACT_ISSUE: the v1 [[request]] table in CONTRACTS.md section 4 has no
+# `optional` field; `optional = true` follows docs/research/03 section 4.2/4.4.
+id = "credits"
+method = "GET"
+url = "https://openrouter.ai/api/v1/credits"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+optional = true
+
+[[window]]
+# Key-level spending cap. `limit` is the USD cap (null = no cap);
+# `limit_remaining` is what is left, so used = limit - remaining.
+# `limit_reset` is a cadence string ("monthly"), not a timestamp, so the ISO
+# boundary in effective_budget.resets_at is used when available.
+id = "key-limit"
+kind = "monthly"
+label = "Key limit"
+from = "key"
+remaining = "$.data.limit_remaining"
+limit = "$.data.limit"
+resets_at = "$.data.effective_budget.resets_at"
+resets_at_format = "iso8601"
+window_minutes = 43200
+skip_if_null = ["limit"]
+provenance = "official"
+
+[[balance]]
+# Remaining USD on the key's own spending cap (available to any key).
+id = "key-cap-remaining"
+label = "Key cap remaining"
+kind = "cap"
+from = "key"
+amount = "$.data.limit_remaining"
+limit = "$.data.limit"
+currency = "USD"
+provenance = "official"
+
+[[balance]]
+# Account-wide credits spent, all time (management key only).
+# CONTRACT_ISSUE: remaining credits = total_credits - total_usage is not
+# expressible with the v1 single-path transforms in CONTRACTS.md section 4,
+# so only the documented `total_usage` field is mapped here.
+id = "credits-used"
+label = "Credits used (all time)"
+kind = "spend"
+from = "credits"
+amount = "$.data.total_usage"
+currency = "USD"
+provenance = "official"

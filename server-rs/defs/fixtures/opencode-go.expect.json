@@ -1,0 +1,8 @@
+{
+  "windows": [
+    { "id": "go_rolling", "kind": "session", "usedPercent": 12.5, "resetsAt": "2026-11-20T15:00:00Z" },
+    { "id": "go_weekly", "kind": "weekly", "usedPercent": 40, "resetsAt": "2026-11-24T00:00:00Z" },
+    { "id": "go_monthly", "kind": "monthly", "usedPercent": 8.25, "resetsAt": "2026-12-01T00:00:00Z" }
+  ],
+  "balances": []
+}

@@ -1,0 +1,74 @@
+# OpenCode Go subscription quota (rolling / weekly / monthly), read with an OpenCode API key.
+#
+# UNVERIFIED endpoint: https://opencode.ai/zen/go/v1/usage is not a documented public API. The URL
+# and the response shape (`usage.{rolling,weekly,monthly}.{percent,resetsAt}`) are the ones the app's
+# native OpenCode reader and T3 Code's OpenCode Go usage-limit reader use
+# (server-rs/src/providers/opencode.rs). The fixture in fixtures/opencode-go.json is modelled on that
+# reader, NOT copied from an official sample, so every window is labelled `unofficial`.
+#
+# Status is `stable` so users can find the OpenCode Go entry and add a key explicitly. This
+# definition reads keys saved in Burnrate. The native reader discovers OpenCode's local credentials
+# only when `advanced.experimental.opencodeGoLocalCredentials` is true.
+#
+# One entry, one quota: GET /api/providers lists OpenCode once, under this id. The native reader steps
+# aside while any Go key is saved here, so the same quota never shows twice.
+#
+# A Zen key without a Go subscription answers 401/403 or omits the windows: omitted windows are
+# skipped (`skip_if_null`), never shown as 0%.
+#
+# Docs for the product (not the usage endpoint): https://opencode.ai/v2/docs/console/go/
+schema = 1
+id = "opencode-go"
+label = "OpenCode Go"
+color = "#5b9bbd"
+status = "stable"
+category = "agent"
+key_url = "https://opencode.ai/auth"
+docs = "https://opencode.ai/v2/docs/console/go/"
+auth = "apiKey"
+key_hosts = ["opencode.ai"]
+poll_seconds = 300
+plan = "OpenCode Go"
+
+# source: server-rs/src/providers/opencode.rs (GET /zen/go/v1/usage, Bearer key)
+[[request]]
+id = "usage"
+method = "GET"
+url = "https://opencode.ai/zen/go/v1/usage"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+
+[[window]]
+id = "go_rolling"
+kind = "session"
+label = "Go · Session"
+from = "usage"
+used_percent = "$.usage.rolling.percent"
+resets_at = "$.usage.rolling.resetsAt"
+resets_at_format = "iso8601"
+window_minutes = 300
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+[[window]]
+id = "go_weekly"
+kind = "weekly"
+label = "Go · Weekly"
+from = "usage"
+used_percent = "$.usage.weekly.percent"
+resets_at = "$.usage.weekly.resetsAt"
+resets_at_format = "iso8601"
+window_minutes = 10080
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+[[window]]
+id = "go_monthly"
+kind = "monthly"
+label = "Go · Monthly"
+from = "usage"
+used_percent = "$.usage.monthly.percent"
+resets_at = "$.usage.monthly.resetsAt"
+resets_at_format = "iso8601"
+skip_if_null = ["used_percent"]
+provenance = "unofficial"

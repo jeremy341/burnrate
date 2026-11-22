@@ -1,0 +1,159 @@
+# =============================================================================
+# Burnrate provider definition - complete commented example
+# =============================================================================
+# Copy this file to `<your-id>.toml`, fill in the values, then validate it:
+#   POST /api/defs/validate  {"toml": "<file contents>"}
+# or save it as a user definition:
+#   PUT /api/defs/user/<your-id>  {"toml": "<file contents>"}
+#
+# Rules that the engine enforces (docs/PROVIDER-DEFINITIONS.md has the long
+# version, docs/CONTRACTS.md section 4 is the normative contract):
+#   * files starting with "_" are ignored, so this example never loads
+#   * only https:// URLs; the host must be listed in key_hosts
+#   * the only placeholder is {{key}}; the key is never logged
+#   * no scripting: extraction is JSONPath (RFC 9535) or a number literal,
+#     followed by the closed transform set below
+#   * 1..4 [[request]] blocks, executed in order; a failed request makes the
+#     account unavailable (limits.unavailable = probeFailed) with the key redacted
+#
+# The values below describe a fictional provider. Do not copy the domain.
+# =============================================================================
+
+schema = 1                                   # required, always 1
+id = "acme-ai"                               # [a-z0-9-]{1,40}, unique, = file name
+label = "Acme AI"                            # shown in the provider list
+color = "#6467f2"                            # hex accent used for the icon fallback
+status = "experimental"                      # stable | experimental | disabled
+                                             #   stable       = verified against official docs
+                                             #   experimental = unofficial/community endpoint;
+                                             #                  hidden unless advanced.experimental.<id>
+                                             #   disabled     = no per-key usage API; shown in the
+                                             #                  catalog with a note, never probed
+docs = "https://docs.acme.example/usage"     # official documentation URL (source of every field)
+auth = "apiKey"                              # apiKey | none  (local logins are native Rust providers)
+key_hosts = ["api.acme.example"]             # the key may ONLY be sent to these hosts.
+                                             # required when auth = "apiKey"; exact or subdomain.
+poll_seconds = 300                           # probe interval, minimum 60 (+20% jitter in the engine)
+plan = "Acme Pro"                            # optional; shown as the account's plan name
+
+# -----------------------------------------------------------------------------
+# Requests: 1..4, executed in order. Later requests can only be used by windows
+# and balances that name them in `from`; they cannot template {{key}} into
+# another request's URL/body (that would be scripting).
+# -----------------------------------------------------------------------------
+
+[[request]]
+id = "usage"                                 # referenced by window/balance `from`
+method = "GET"                               # GET | POST
+url = "https://api.acme.example/v1/usage"    # https only, host must be in key_hosts
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+                                             # {{key}} is the only placeholder, replaced at send time
+timeout_seconds = 10                         # request timeout in seconds
+
+# A second request is optional. Never point a normal key at an endpoint that
+# returns 401/403 for it: a failed request fails the whole account (v1 has no
+# "optional request" flag), so keep the list to endpoints the key can call.
+[[request]]
+id = "balance"
+method = "GET"
+url = "https://api.acme.example/v1/balance"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+
+# POST example (commented out):
+# [[request]]
+# id = "costs"
+# method = "POST"
+# url = "https://api.acme.example/v1/costs"
+# headers = { Authorization = "Bearer {{key}}", "Content-Type" = "application/json" }
+# body = '{"bucket_width":"1d","limit":1}'
+# timeout_seconds = 10
+
+# -----------------------------------------------------------------------------
+# Windows: percent-shaped usage (0..100). Pick ONE extraction form per window:
+#   used_percent = "<path or number>"      the API already gives a percentage
+#   used + limit = "<path or number>"      used / limit * 100
+#   remaining + limit = "<path or number>" (limit - remaining) / limit * 100
+# A JSONPath must start with "$". A bare number is a literal (e.g. limit = 100).
+# -----------------------------------------------------------------------------
+
+[[window]]
+id = "session"                               # unique inside the definition
+kind = "session"                             # session | weekly | monthly | other
+label = "Session limit"
+from = "usage"                               # request id
+used_percent = "$.limits.session.used_percent"
+resets_at = "$.limits.session.resets_at"     # optional
+resets_at_format = "iso8601"                 # iso8601 | unix_s | unix_ms | seconds_from_now
+provenance = "official"                      # official | unofficial | statusline | local | estimated
+
+[[window]]
+id = "monthly"
+kind = "monthly"
+label = "Monthly cap"
+from = "usage"
+used = "$.limits.monthly.used"               # used / limit
+limit = "$.limits.monthly.limit"
+resets_at = "$.limits.monthly.resets_at"
+resets_at_format = "iso8601"
+window_minutes = 43200                       # optional constant window length (30 days)
+skip_if_null = ["limit"]                     # omit this window when any of these paths is
+                                             # null/missing (a key without a spending cap)
+provenance = "official"
+
+# A remaining-based window with transforms, e.g. an API that returns
+# "remaining_percent" and money-shaped values:
+# [[window]]
+# id = "credits-left"
+# kind = "other"
+# label = "Included credits"
+# from = "balance"
+# remaining = "$.credits.balance_usd"
+# limit = "$.credits.allowance_usd"
+# transform = ["clamp:0:100"]                # optional, applied after extraction
+# provenance = "official"
+
+# Transforms (closed set, applied in order after extraction):
+#   multiply:n  divide:n  add:n  min:n  max:n  clamp:a:b  invert  round:n
+# `invert` means 100 - x (useful for a "remaining percent" API).
+# `clamp:a:b` is the usual guard for APIs that overshoot (e.g. 104.7).
+
+# -----------------------------------------------------------------------------
+# Balances: money-shaped data (major units, e.g. USD 12.50 -> 12.50).
+# The UI renders these as credit / spend / cap rows under the account.
+# -----------------------------------------------------------------------------
+
+[[balance]]
+id = "credits"                               # unique inside the definition
+label = "Credits left"
+kind = "credit"                              # credit | spend | cap
+from = "balance"                             # request id
+amount = "$.credits.remaining"
+limit = "$.credits.allowance"                # optional
+currency = "USD"                             # literal, or { path = "$.currency" } for per-account currency
+provenance = "official"
+
+[[balance]]
+id = "spend-today"
+label = "Spend (today)"
+kind = "spend"
+from = "balance"
+amount = "$.spend.today_usd"
+currency = "USD"
+provenance = "official"
+
+# =============================================================================
+# Checklist before opening a PR
+# =============================================================================
+# 1. Every value is copied from the provider's official documentation; put the
+#    URL in `docs` and add "# source: <url>" comments next to the mapping.
+# 2. key_hosts contains exactly the hosts used by the requests (and nothing else).
+# 3. Add a fixture per request: server-rs/defs/fixtures/<id>-<request>.json with
+#    a response built ONLY from documentation (never a real account).
+# 4. Add server-rs/defs/fixtures/<id>.expect.json with the mapped output.
+# 5. Run: node scripts/build-catalog.mjs && node scripts/build-catalog.mjs --validate
+# 6. cargo test --manifest-path server-rs/Cargo.toml  (parses every definition and fixture)
+# 7. If the provider has no per-key usage API, do not guess: use status = "disabled",
+#    add a "# NO USAGE API" comment and a catalog note. Users then track it with a
+#    budget (docs/CONTRACTS.md section 5) instead of an invented percentage.
+# =============================================================================

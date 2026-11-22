@@ -1,0 +1,28 @@
+schema = 1
+id = "together"
+label = "Together AI"
+color = "#7C6CF0"
+# NO USAGE API: there is no balance endpoint. GET /v1/billing/usage is official
+# but beta and enabled per organization on request (404 otherwise); it returns
+# cost-annotated line items over paginated time windows with no single total and
+# no remaining credit, so nothing can be mapped with the closed transform set.
+# Project/org budgets and spend alerts are "coming soon". Use a local budget.
+# CATALOG NOTE: disabled - beta/gated usage endpoint, no balance or mappable cap.
+# source: https://docs.together.ai/reference/billing-usage
+status = "disabled"
+category = "apiKey"
+key_url = "https://api.together.ai/settings/api-keys"
+docs = "https://docs.together.ai/reference/billing-usage"
+auth = "apiKey"
+key_hosts = ["api.together.ai"]
+poll_seconds = 300
+
+# Schema-only placeholder so the definition parses (1..4 requests required).
+# Never executed while status = "disabled"; produces no windows or balances.
+# source: https://docs.together.ai/reference/billing-usage
+[[request]]
+id = "usage"
+method = "GET"
+url = "https://api.together.ai/v1/billing/usage?granularity=day"
+headers = { Authorization = "Bearer {{key}}" }
+timeout_seconds = 10

@@ -1,0 +1,58 @@
+# OpenAI organization-level Admin API (usage / costs / spend limits).
+# source: https://platform.openai.com/docs/api-reference/organization-costs
+# source: https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/spend_limit
+# Verified [V] for /v1/organization/spend_limit from the official reference on 2026-11-20.
+# UNVERIFIED: the /v1/organization/costs response field names come from
+#   docs/research/03-universal-providers.md section 2.2 ([S]/[C] evidence) and the endpoint is
+#   no longer listed in the current official reference index. Enable
+#   advanced.experimental.openai-admin to show this definition until a live check is done.
+# An Admin API key (sk-admin-...) is org-scoped and cannot call inference endpoints.
+schema = 1
+id = "openai-admin"
+label = "OpenAI Admin"
+color = "#10a37f"
+status = "experimental"
+category = "admin"
+key_url = "https://platform.openai.com/settings/organization/admin-keys"
+docs = "https://platform.openai.com/docs/api-reference/organization-costs"
+auth = "apiKey"
+key_hosts = ["api.openai.com"]
+poll_seconds = 300
+plan = "OpenAI organization (admin key)"
+
+# Monthly hard spend limit configured by the organization.
+# The documented response reports `threshold_amount` in USD cents.
+[[request]]
+id = "spend_limit"
+method = "GET"
+url = "https://api.openai.com/v1/organization/spend_limit"
+headers = { Authorization = "Bearer {{key}}" }
+timeout_seconds = 10
+
+# Daily cost buckets for the organization (bucket_width=1d, group_by=line_item).
+# The definition exposes the first bucket returned; there is no aggregate total field.
+[[request]]
+id = "costs"
+method = "GET"
+url = "https://api.openai.com/v1/organization/costs?bucket_width=1d&group_by=line_item"
+headers = { Authorization = "Bearer {{key}}" }
+timeout_seconds = 10
+
+[[balance]]
+id = "monthly_cap"
+label = "Monthly spend limit"
+kind = "cap"
+from = "spend_limit"
+amount = "$.threshold_amount"
+transform = ["divide:100"]
+currency = { path = "$.currency" }
+provenance = "official"
+
+[[balance]]
+id = "daily_cost"
+label = "Daily API cost"
+kind = "spend"
+from = "costs"
+amount = "$.data[0].cost"
+currency = "USD"
+provenance = "official"

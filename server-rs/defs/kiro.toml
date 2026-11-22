@@ -1,0 +1,64 @@
+# Kiro (AWS) - plan/overage credits from the CLI's private GetUsageLimits service.
+# source: https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/Providers/Kiro/KiroUsageLimitsAPI.swift
+# source: docs/research/03-universal-providers.md section 2.1 "Kiro" (evidence [C]).
+# UNVERIFIED: this is a private CLI service contract, not a documented public API. The token is
+# supplied by the user manually; the CLI's SQLite auth_kv token is read-only and is never refreshed
+# here. Only the US-East endpoint and Builder-ID logins (empty request body) are expressed; a
+# profile-ARN account needs a user definition pointed at q.eu-central-1.amazonaws.com with a
+# `{"profileArn": "..."}` body.
+# UNVERIFIED: `currentUsageWithPrecision` is the TOTAL including overage. This schema's closed
+# transform set cannot subtract `currentOveragesWithPrecision`, so the plan window is reported as
+# total-credits / plan-limit (clamped by the engine) rather than plan-only credits.
+schema = 1
+id = "kiro"
+label = "Kiro"
+color = "#ff9900"
+status = "experimental"
+category = "agent"
+docs = "https://kiro.dev/docs/reference/cli-commands/"
+auth = "apiKey"
+key_hosts = ["codewhisperer.us-east-1.amazonaws.com"]
+poll_seconds = 300
+plan = "Kiro"
+
+[[request]]
+id = "usage"
+method = "POST"
+url = "https://codewhisperer.us-east-1.amazonaws.com/"
+headers = { Authorization = "Bearer {{key}}", "X-Amz-Target" = "AmazonCodeWhispererService.GetUsageLimits", "Content-Type" = "application/x-amz-json-1.0" }
+body = "{}"
+timeout_seconds = 10
+
+[[window]]
+id = "plan_credits"
+kind = "monthly"
+label = "Plan credits"
+from = "usage"
+used = "$.usageBreakdownList[0].currentUsageWithPrecision"
+limit = "$.usageBreakdownList[0].usageLimitWithPrecision"
+resets_at = "$.usageBreakdownList[0].nextDateReset"
+resets_at_format = "unix_s"
+window_minutes = 43200
+skip_if_null = ["limit"]
+provenance = "unofficial"
+
+[[window]]
+id = "overage_credits"
+kind = "other"
+label = "Overage credits"
+from = "usage"
+used = "$.usageBreakdownList[0].currentOveragesWithPrecision"
+limit = "$.usageBreakdownList[0].overageCapWithPrecision"
+resets_at = "$.usageBreakdownList[0].nextDateReset"
+resets_at_format = "unix_s"
+skip_if_null = ["limit"]
+provenance = "unofficial"
+
+[[balance]]
+id = "overage_spend"
+label = "Overage charges"
+kind = "spend"
+from = "usage"
+amount = "$.usageBreakdownList[0].overageCharges"
+currency = { path = "$.usageBreakdownList[0].currency" }
+provenance = "unofficial"

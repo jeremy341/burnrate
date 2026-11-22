@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "fixture-session",
+  "transcript_path": "/home/tester/.claude/projects/-home-tester-proj/s.jsonl",
+  "rate_limits": null
+}

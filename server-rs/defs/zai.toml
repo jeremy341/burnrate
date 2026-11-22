@@ -1,0 +1,98 @@
+# Z.ai / GLM Coding Plan quota.
+# source: https://docs.z.ai/devpack/overview (plan docs, peak/off-peak credit rules)
+# source: https://docs.z.ai/devpack/notice/usage-revision (plan revision: credits + weekly limit)
+# UNVERIFIED: the quota endpoint is an undocumented dashboard API (community parsers: CodexBar
+#   docs/zai.md, opencode-glm-quota). The response envelope is
+#   {success, code, data:{planName, limits:[{type, unit, number, percentage, usage,
+#   currentValue, remaining, nextResetTime, usageDetails}]}}. An empty data.limits means
+#   "no Coding Plan on this key" and must be reported unavailable, never as 0% used.
+#   `unit` is a duration unit enum (1=day, 3=hour, 5=minute, 6=week); the schema only takes a
+#   constant window_minutes, so the filters below pin the known 5-hour / 1-week / monthly MCP
+#   entries instead of deriving the duration.
+# Only the global host is allowed: a CN (open.bigmodel.cn) key must not be sent here. The CN
+# prepaid-balance console endpoint is deliberately not used (undocumented, different host).
+schema = 1
+id = "zai"
+label = "Z.ai / GLM"
+color = "#3859ff"
+status = "experimental"
+category = "apiKey"
+key_url = "https://z.ai/manage-apikey/apikey-list"
+docs = "https://docs.z.ai/devpack/overview"
+auth = "apiKey"
+key_hosts = ["api.z.ai"]
+poll_seconds = 300
+plan = "GLM Coding Plan"
+
+[[request]]
+id = "quota"
+method = "GET"
+url = "https://api.z.ai/api/monitor/usage/quota/limit"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+
+# 5-hour token quota (legacy TOKENS_LIMIT plans).
+[[window]]
+id = "session_tokens"
+kind = "session"
+label = "5-hour token quota"
+from = "quota"
+used_percent = '$.data.limits[?(@.type == "TOKENS_LIMIT" && @.unit == 3 && @.number == 5)].percentage'
+resets_at = '$.data.limits[?(@.type == "TOKENS_LIMIT" && @.unit == 3 && @.number == 5)].nextResetTime'
+resets_at_format = "unix_ms"
+window_minutes = 300
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+# Weekly token quota (plans reissued after the 2025 usage revision).
+[[window]]
+id = "weekly_tokens"
+kind = "weekly"
+label = "Weekly token quota"
+from = "quota"
+used_percent = '$.data.limits[?(@.type == "TOKENS_LIMIT" && @.unit == 6 && @.number == 1)].percentage'
+resets_at = '$.data.limits[?(@.type == "TOKENS_LIMIT" && @.unit == 6 && @.number == 1)].nextResetTime'
+resets_at_format = "unix_ms"
+window_minutes = 10080
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+# 5-hour credit quota (credit-based plans; type CREDIT_LIMIT, same duration fields).
+[[window]]
+id = "session_credits"
+kind = "session"
+label = "5-hour credit quota"
+from = "quota"
+used_percent = '$.data.limits[?(@.type == "CREDIT_LIMIT" && @.unit == 3 && @.number == 5)].percentage'
+resets_at = '$.data.limits[?(@.type == "CREDIT_LIMIT" && @.unit == 3 && @.number == 5)].nextResetTime'
+resets_at_format = "unix_ms"
+window_minutes = 300
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+# Weekly credit quota (credit-based plans).
+[[window]]
+id = "weekly_credits"
+kind = "weekly"
+label = "Weekly credit quota"
+from = "quota"
+used_percent = '$.data.limits[?(@.type == "CREDIT_LIMIT" && @.unit == 6 && @.number == 1)].percentage'
+resets_at = '$.data.limits[?(@.type == "CREDIT_LIMIT" && @.unit == 6 && @.number == 1)].nextResetTime'
+resets_at_format = "unix_ms"
+window_minutes = 10080
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+# MCP / tool-call quota. The dashboard marks it with unit=5 (minute), number=1, which the
+# community parser reads as a monthly bucket; it is not a five-minute window.
+[[window]]
+id = "mcp"
+kind = "monthly"
+label = "MCP tool calls"
+from = "quota"
+used_percent = '$.data.limits[?(@.type == "TIME_LIMIT")].percentage'
+resets_at = '$.data.limits[?(@.type == "TIME_LIMIT")].nextResetTime'
+resets_at_format = "unix_ms"
+window_minutes = 43200
+skip_if_null = ["used_percent"]
+provenance = "unofficial"

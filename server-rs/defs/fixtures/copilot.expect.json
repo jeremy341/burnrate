@@ -1,0 +1,7 @@
+{
+  "windows": [
+    { "id": "premium_interactions", "kind": "monthly", "usedPercent": 25 },
+    { "id": "chat", "kind": "monthly", "usedPercent": 0 }
+  ],
+  "balances": []
+}
