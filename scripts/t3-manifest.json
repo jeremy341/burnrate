@@ -4,7 +4,7 @@
     {
       "ours": "src/index.css",
       "theirs": "apps/web/src/index.css",
-      "mode": "verbatim"
+      "mode": "adapted"
     },
     {
       "ours": "src/components/ui/alert-dialog.tsx",
@@ -49,7 +49,7 @@
     {
       "ours": "src/components/ui/menu.tsx",
       "theirs": "apps/web/src/components/ui/menu.tsx",
-      "mode": "verbatim"
+      "mode": "adapted"
     },
     {
       "ours": "src/components/ui/popover.tsx",
@@ -69,7 +69,7 @@
     {
       "ours": "src/components/ui/select.tsx",
       "theirs": "apps/web/src/components/ui/select.tsx",
-      "mode": "verbatim"
+      "mode": "adapted"
     },
     {
       "ours": "src/components/ui/skeleton.tsx",

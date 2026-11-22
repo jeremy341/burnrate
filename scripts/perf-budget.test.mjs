@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -222,10 +223,18 @@ describe("parseArgs", () => {
 });
 
 describe("processRssMb", () => {
-  it("reads the current process working set", () => {
-    const rss = processRssMb(process.pid);
-    expect(rss).toBeGreaterThan(1);
-    expect(rss).toBeLessThan(4096);
+  it("reads a live process working set", () => {
+    // A dedicated child keeps a real OS PID alive while PowerShell queries it. Vitest workers can
+    // report a PID that Get-Process cannot see, which made the old process.pid probe flaky.
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    try {
+      expect(child.pid).toBeGreaterThan(0);
+      const rss = processRssMb(child.pid);
+      expect(rss).toBeGreaterThan(1);
+      expect(rss).toBeLessThan(4096);
+    } finally {
+      child.kill();
+    }
     // Starts a PowerShell on Windows; on a busy machine that alone can pass the default 5 s.
   }, 30_000);
 });

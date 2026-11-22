@@ -1,6 +1,14 @@
 {
   "note": "Package id -> owned globs. Run: node scripts/check-ownership.mjs <id> [base]. Files not listed are integrator-owned.",
   "packages": {
+    "00": {
+      "name": "integrator",
+      "wave": "-",
+      "globs": [
+        "**"
+      ],
+      "deps": ""
+    },
     "10": {
       "name": "claude-statusline",
       "wave": "A",

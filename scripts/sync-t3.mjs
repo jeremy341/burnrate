@@ -39,11 +39,23 @@ try {
 }
 
 const configuredUpstream = process.env.T3_SRC || manifest.upstream;
-if (!configuredUpstream) {
+// T3_SRC wins; otherwise probe the conventional sibling checkout locations so `check:sync` works
+// without machine-specific configuration (the documented built-in default).
+const candidates = [
+  configuredUpstream,
+  "../t3code-src",
+  "../../t3code-src",
+  "../ysws/t3code-src",
+  "../../ysws/t3code-src",
+].filter(Boolean);
+const upstreamFound = candidates
+  .map((p) => path.resolve(p))
+  .find((p) => fs.existsSync(path.join(p, "apps/web/src/index.css")));
+if (!upstreamFound) {
   console.error("Set T3_SRC (or manifest.upstream) to the T3 Code checkout before syncing.");
   process.exit(2);
 }
-const upstream = path.resolve(configuredUpstream);
+const upstream = upstreamFound;
 const baseCommit = manifest.baseCommit || "";
 
 /** Normalize a user-supplied / manifest path to forward slashes, no leading "./". */
