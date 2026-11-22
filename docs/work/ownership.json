@@ -1,0 +1,527 @@
+{
+  "note": "Package id -> owned globs. Run: node scripts/check-ownership.mjs <id> [base]. Files not listed are integrator-owned.",
+  "packages": {
+    "10": {
+      "name": "claude-statusline",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/providers/**",
+        "server-rs/src/routes/ingest_api.rs"
+      ],
+      "deps": ""
+    },
+    "11": {
+      "name": "cli",
+      "wave": "A",
+      "globs": [
+        "cli/**"
+      ],
+      "deps": ""
+    },
+    "12": {
+      "name": "shell",
+      "wave": "A",
+      "globs": [
+        "src-tauri/**"
+      ],
+      "deps": ""
+    },
+    "13": {
+      "name": "defs-openrouter-deepseek",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/openrouter.toml",
+        "server-rs/defs/deepseek.toml",
+        "server-rs/defs/fixtures/openrouter*.json",
+        "server-rs/defs/fixtures/deepseek*.json"
+      ],
+      "deps": ""
+    },
+    "14": {
+      "name": "defs-moonshot-kimi",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/moonshot.toml",
+        "server-rs/defs/kimi-code.toml",
+        "server-rs/defs/fixtures/moonshot*.json",
+        "server-rs/defs/fixtures/kimi*.json"
+      ],
+      "deps": ""
+    },
+    "15": {
+      "name": "defs-xai-zai",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/xai.toml",
+        "server-rs/defs/zai.toml",
+        "server-rs/defs/fixtures/xai*.json",
+        "server-rs/defs/fixtures/zai*.json"
+      ],
+      "deps": ""
+    },
+    "16": {
+      "name": "defs-admin-apis",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/openai-admin.toml",
+        "server-rs/defs/anthropic-admin.toml",
+        "server-rs/defs/fixtures/openai*.json",
+        "server-rs/defs/fixtures/anthropic*.json"
+      ],
+      "deps": ""
+    },
+    "17": {
+      "name": "defs-copilot-kiro-windsurf",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/copilot.toml",
+        "server-rs/defs/kiro.toml",
+        "server-rs/defs/windsurf.toml",
+        "server-rs/defs/fixtures/copilot*.json",
+        "server-rs/defs/fixtures/kiro*.json",
+        "server-rs/defs/fixtures/windsurf*.json"
+      ],
+      "deps": ""
+    },
+    "18": {
+      "name": "defs-ollama-groq-perplexity-together",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/ollama.toml",
+        "server-rs/defs/groq.toml",
+        "server-rs/defs/perplexity.toml",
+        "server-rs/defs/together.toml",
+        "server-rs/defs/fixtures/ollama*.json",
+        "server-rs/defs/fixtures/groq*.json",
+        "server-rs/defs/fixtures/perplexity*.json",
+        "server-rs/defs/fixtures/together*.json"
+      ],
+      "deps": ""
+    },
+    "19": {
+      "name": "defs-gemini-cloud",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/gemini.toml",
+        "server-rs/defs/vertex.toml",
+        "server-rs/defs/azure-openai.toml",
+        "server-rs/defs/bedrock.toml",
+        "server-rs/defs/fixtures/gemini*.json",
+        "server-rs/defs/fixtures/vertex*.json",
+        "server-rs/defs/fixtures/azure*.json",
+        "server-rs/defs/fixtures/bedrock*.json"
+      ],
+      "deps": ""
+    },
+    "20": {
+      "name": "defs-catalog",
+      "wave": "A",
+      "globs": [
+        "server-rs/defs/catalog.json",
+        "server-rs/defs/_example.toml",
+        "server-rs/defs/README.md",
+        "docs/PROVIDER-DEFINITIONS.md",
+        "scripts/build-catalog.mjs"
+      ],
+      "deps": ""
+    },
+    "21": {
+      "name": "theme-core",
+      "wave": "A",
+      "globs": [
+        "src/themePalette.ts",
+        "src/themeCss.ts",
+        "src/appearanceContrast.ts",
+        "src/appearance.ts",
+        "src/hooks/useTheme.ts",
+        "src/hooks/useCustomThemes.ts",
+        "src/themes/engine/**",
+        "src/themes/store.ts",
+        "src/theme-dark.css",
+        "index.html",
+        "src/main.tsx",
+        "src/themes/registry.ts"
+      ],
+      "deps": ""
+    },
+    "22": {
+      "name": "theme-editor",
+      "wave": "B",
+      "globs": [
+        "src/components/settings/ThemeEditor*.tsx",
+        "src/components/settings/ThemeColorPicker.tsx",
+        "src/components/settings/ThemeCssEditor.tsx",
+        "src/components/settings/ThemePreviewCircles.tsx",
+        "src/components/settings/ThemeWireframe.tsx",
+        "src/components/settings/themeEditorStore.ts",
+        "src/components/settings/themeInspector.ts"
+      ],
+      "deps": "21,26"
+    },
+    "23": {
+      "name": "theme-import",
+      "wave": "B",
+      "globs": [
+        "src/vscodeThemeImport.ts",
+        "src/openVsxThemes.ts",
+        "src/components/settings/ThemeImportDialog.tsx",
+        "src/components/settings/ThemeSearchSection.tsx",
+        "src/api/themes.ts"
+      ],
+      "deps": "21"
+    },
+    "24": {
+      "name": "appearance-extras",
+      "wave": "B",
+      "globs": [
+        "src/appearance.css",
+        "src/components/settings/Typography*.tsx",
+        "src/components/settings/FontFamilyPicker.tsx",
+        "src/components/settings/SettingsFontPreviews.tsx",
+        "src/appearanceFonts.ts",
+        "src/themes/presets/**",
+        "docs/THEME.md"
+      ],
+      "deps": "21,26"
+    },
+    "25": {
+      "name": "settings-shell",
+      "wave": "A",
+      "globs": [
+        "src/settings/SettingsPage.tsx",
+        "src/settings/registry.ts",
+        "src/settings/types.ts",
+        "src/settings/layout.tsx",
+        "src/settings/search.ts",
+        "src/views/settings.tsx",
+        "src/components/settings/SettingsGroup.tsx",
+        "src/components/settings/FoldedSettingsSection.tsx",
+        "src/components/skeletons/SettingsSkeleton.tsx",
+        "src/settings/settings.css"
+      ],
+      "deps": ""
+    },
+    "26": {
+      "name": "settings-store-client",
+      "wave": "A",
+      "globs": [
+        "src/settings/store.ts",
+        "src/settings/schema.ts",
+        "src/settings/migrate.ts",
+        "src/hooks/useSettings.ts",
+        "src/api/settings.ts",
+        "src/settings/*.test.ts"
+      ],
+      "deps": ""
+    },
+    "27": {
+      "name": "sec-general",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/general.tsx"
+      ],
+      "deps": ""
+    },
+    "28": {
+      "name": "sec-appearance",
+      "wave": "B",
+      "globs": [
+        "src/settings/sections/appearance.tsx",
+        "src/components/settings/ThemeSettings.tsx",
+        "src/components/settings/AppearanceSettingsPanel.tsx"
+      ],
+      "deps": "21,22,26"
+    },
+    "29": {
+      "name": "sec-usage",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/usage.tsx",
+        "src/api/budgets.ts",
+        "src/components/settings/BudgetEditor.tsx"
+      ],
+      "deps": ""
+    },
+    "30": {
+      "name": "sec-providers-defs",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/providers.tsx",
+        "src/api/defs.ts",
+        "src/components/definitions/DefinitionEditor.tsx"
+      ],
+      "deps": ""
+    },
+    "31": {
+      "name": "sec-notifications",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/notifications.tsx",
+        "src/api/alerts.ts",
+        "src/api/secrets.ts",
+        "src/components/settings/ChannelSecretField.tsx"
+      ],
+      "deps": ""
+    },
+    "32": {
+      "name": "sec-shortcuts",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/shortcuts.tsx",
+        "src/settings/shortcuts.ts"
+      ],
+      "deps": ""
+    },
+    "33": {
+      "name": "sec-shell-advanced",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/advanced.tsx"
+      ],
+      "deps": ""
+    },
+    "34": {
+      "name": "sec-data",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/data.tsx",
+        "src/settings/transfer.ts"
+      ],
+      "deps": ""
+    },
+    "35": {
+      "name": "sec-about",
+      "wave": "A",
+      "globs": [
+        "src/settings/sections/about.tsx",
+        "src/api/diagnostics.ts",
+        "src/components/settings/DiagnosticsPanel.tsx"
+      ],
+      "deps": ""
+    },
+    "38": {
+      "name": "app-shell",
+      "wave": "A",
+      "globs": [
+        "src/App.tsx",
+        "src/components/AppHeader.tsx",
+        "src/components/WorkspacePageContainer.tsx",
+        "src/components/WorkspaceBreadcrumb.tsx",
+        "src/components/ui/app-nav.ts",
+        "src/components/ui/app-shell.tsx",
+        "src/components/AppModalFrame.tsx",
+        "src/state/usage.ts",
+        "src/lib/locale.ts",
+        "src/t3-shims/gt-react.ts",
+        "src/AppProviders.tsx",
+        "src/views/registry.ts",
+        "src/views/types.ts"
+      ],
+      "deps": ""
+    },
+    "39": {
+      "name": "limits-a11y",
+      "wave": "A",
+      "globs": [
+        "src/components/usage/UsageLimits.tsx",
+        "src/components/usage/UsageLimitsPooled.tsx",
+        "src/components/usage/usageProviders.ts",
+        "src/shared/usageLimits*.ts",
+        "src/shared/usageMerge.ts",
+        "src/shared/usageProgress.ts",
+        "src/a11y.css"
+      ],
+      "deps": ""
+    },
+    "40": {
+      "name": "toast-system",
+      "wave": "A",
+      "globs": [
+        "src/overlays/toast.tsx",
+        "src/lib/toast/**"
+      ],
+      "deps": ""
+    },
+    "41": {
+      "name": "command-palette",
+      "wave": "A",
+      "globs": [
+        "src/overlays/palette.tsx",
+        "src/palette/**"
+      ],
+      "deps": ""
+    },
+    "42": {
+      "name": "onboarding",
+      "wave": "A",
+      "globs": [
+        "src/overlays/onboarding.tsx",
+        "src/onboarding/**"
+      ],
+      "deps": ""
+    },
+    "43": {
+      "name": "alerts-client",
+      "wave": "A",
+      "globs": [
+        "src/overlays/alerts.tsx",
+        "src/alerts/**"
+      ],
+      "deps": ""
+    },
+    "47": {
+      "name": "providers-wizard",
+      "wave": "A",
+      "globs": [
+        "src/ProvidersPage.tsx",
+        "src/views/providers.tsx",
+        "src/components/providers/*.tsx",
+        "src/components/providers/*.ts",
+        "src/components/skeletons/ProvidersSkeleton.tsx",
+        "src/api.ts",
+        "src/api/catalog.ts",
+        "src/providers/**"
+      ],
+      "deps": ""
+    },
+    "48": {
+      "name": "packaging",
+      "wave": "A",
+      "globs": [
+        "packaging/**",
+        ".github/**"
+      ],
+      "deps": ""
+    },
+    "49": {
+      "name": "perf-budget",
+      "wave": "A",
+      "globs": [
+        "scripts/perf-*.mjs",
+        "docs/PERFORMANCE.md",
+        "vite.config.ts"
+      ],
+      "deps": ""
+    },
+    "50": {
+      "name": "smoke-e2e",
+      "wave": "A",
+      "globs": [
+        "scripts/smoke/**"
+      ],
+      "deps": ""
+    },
+    "51": {
+      "name": "usage-screen",
+      "wave": "A",
+      "globs": [
+        "src/components/usage/UsagePage.tsx",
+        "src/components/usage/UsageProviderChart.tsx",
+        "src/components/usage/UsageModelDialog.tsx",
+        "src/components/usage/UsageScanStatus.tsx",
+        "src/components/usage/UsageShareBar.tsx",
+        "src/components/usage/UsageTableRegion.tsx",
+        "src/components/usage/UsagePriceOverrides.tsx",
+        "src/components/usage/UsageLimitsStates.tsx",
+        "src/components/usage/UsageLimitsCollapse.tsx",
+        "src/components/usage/usageBreakdown.ts",
+        "src/components/usage/usageCollapse.ts",
+        "src/components/usage/usagePagePreferences.ts",
+        "src/components/usage/usagePriceForm.ts",
+        "src/components/usage/usagePriceTable.ts",
+        "src/components/usage/usagePriceTargets.ts",
+        "src/components/usage/usageShortcuts.ts",
+        "src/components/usage/usageMarkColor.ts",
+        "src/components/usage/externalLinks.ts",
+        "src/components/skeletons/UsageSkeleton.tsx",
+        "src/components/skeletons/LimitsSkeleton.tsx"
+      ],
+      "deps": ""
+    },
+    "01": {
+      "name": "settings-store",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/settings.rs",
+        "server-rs/src/routes/settings_api.rs"
+      ],
+      "deps": ""
+    },
+    "02": {
+      "name": "themes-proxy",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/themes.rs",
+        "server-rs/src/routes/themes_api.rs"
+      ],
+      "deps": ""
+    },
+    "03": {
+      "name": "defs-engine",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/defs/**",
+        "server-rs/src/routes/defs_api.rs"
+      ],
+      "deps": ""
+    },
+    "04": {
+      "name": "budgets",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/budgets.rs",
+        "server-rs/src/routes/budgets_api.rs"
+      ],
+      "deps": ""
+    },
+    "05": {
+      "name": "net-guard-keys",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/net_guard.rs",
+        "server-rs/src/keys.rs",
+        "server-rs/src/diagnostics.rs",
+        "server-rs/src/routes/secrets_api.rs",
+        "server-rs/src/routes/diagnostics_api.rs"
+      ],
+      "deps": ""
+    },
+    "06": {
+      "name": "history",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/history.rs",
+        "server-rs/src/routes/history_api.rs"
+      ],
+      "deps": ""
+    },
+    "07": {
+      "name": "alerts-engine",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/alerts/**",
+        "server-rs/src/routes/alerts_api.rs"
+      ],
+      "deps": ""
+    },
+    "08": {
+      "name": "scheduler-hub-status",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/scheduler.rs",
+        "server-rs/src/hub.rs",
+        "server-rs/src/routes/status_api.rs"
+      ],
+      "deps": ""
+    },
+    "09": {
+      "name": "readers-extra",
+      "wave": "A",
+      "globs": [
+        "server-rs/src/readers/**",
+        "server-rs/src/pricing.rs"
+      ],
+      "deps": ""
+    }
+  }
+}
