@@ -1,12 +1,24 @@
+// Must stay first: applies the saved palette, mode and fonts before the app graph evaluates.
+import "./appearanceBoot";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "@fontsource-variable/inter";
 import "./index.css";
-import "./theme-dark.css";
+import "./appearance.css";
+import { useAppearanceSync } from "./appearance";
 import { App } from "./App";
+import { AppProviders } from "./AppProviders";
+import "./a11y.css";
+
+function AppearanceSync() {
+  useAppearanceSync();
+  return null;
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <AppProviders>
+      <AppearanceSync />
+      <App />
+    </AppProviders>
   </StrictMode>,
 );
