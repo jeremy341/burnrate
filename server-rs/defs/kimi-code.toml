@@ -1,0 +1,67 @@
+# Kimi Code plan quota: rolling 5-hour rate window plus the legacy 7-day membership quota.
+#
+# UNVERIFIED: https://api.kimi.com/coding/v1/usages is the quota endpoint the Kimi Code CLI uses; it
+# is not published as a public API. The response shape below is the one documented by community
+# trackers (CodexBar docs/kimi.md, UsageBar docs/providers/kimi.md) and is therefore `experimental`
+# (hidden unless `advanced.experimental.kimi-code` is enabled).
+#
+# Auth: create a Kimi Code API key in the console (https://www.kimi.com/code/console). Keys are
+# regional: kimi.com keys work on api.kimi.com, kimi.ai keys on api.kimi.ai; they are not
+# interchangeable. For an international key, copy this file to
+# `<data>/providers.d/kimi-code-ai.toml`, set `id = "kimi-code-ai"` and change `key_hosts` + `url`
+# to api.kimi.ai.
+#
+# This is read-only quota metadata. Burnrate never reads or refreshes Kimi CLI credentials/tokens;
+# the API key comes from the encrypted key store.
+#
+# New Kimi plans (2026+) dropped the weekly quota and keep only the 5-hour window plus a monthly
+# total; the weekly window below is skipped when `usage` is absent (`skip_if_null`).
+
+schema = 1
+id = "kimi-code"
+label = "Kimi Code"
+color = "#7c5cff"
+status = "experimental"
+category = "apiKey"
+key_url = "https://www.kimi.com/code/console"
+docs = "https://www.kimi.com/code/console"
+auth = "apiKey"
+key_hosts = ["api.kimi.com"]
+poll_seconds = 120
+plan = "Kimi Code"
+
+# source: https://github.com/steipete/CodexBar/blob/main/docs/kimi.md (GET /coding/v1/usages)
+[[request]]
+id = "usages"
+method = "GET"
+url = "https://api.kimi.com/coding/v1/usages"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10
+
+# Rolling 5-hour rate window: `limits[0].window.duration = 300` minutes / `TIME_UNIT_MINUTE`.
+[[window]]
+id = "session-5h"
+kind = "session"
+label = "5-hour rate limit"
+from = "usages"
+limit = "$.limits[0].detail.limit"
+remaining = "$.limits[0].detail.remaining"
+resets_at = "$.limits[0].detail.resetTime"
+resets_at_format = "iso8601"
+window_minutes = 300
+skip_if_null = ["limit", "remaining"]
+provenance = "unofficial"
+
+# Membership quota (`usage`): weekly on legacy plans, absent on the new plans.
+[[window]]
+id = "weekly"
+kind = "weekly"
+label = "Weekly requests"
+from = "usages"
+limit = "$.usage.limit"
+remaining = "$.usage.remaining"
+resets_at = "$.usage.resetTime"
+resets_at_format = "iso8601"
+window_minutes = 10080
+skip_if_null = ["limit", "remaining"]
+provenance = "unofficial"

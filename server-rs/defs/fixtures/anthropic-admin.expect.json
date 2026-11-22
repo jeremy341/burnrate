@@ -1,0 +1,11 @@
+{
+  "windows": [],
+  "balances": [
+    {
+      "id": "daily_cost",
+      "kind": "spend",
+      "amount": 1.2378912,
+      "currency": "USD"
+    }
+  ]
+}

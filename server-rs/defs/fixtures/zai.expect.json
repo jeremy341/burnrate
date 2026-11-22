@@ -1,0 +1,23 @@
+{
+  "windows": [
+    {
+      "id": "session_tokens",
+      "kind": "session",
+      "usedPercent": 42,
+      "resetsAt": "2026-11-20T18:00:00Z"
+    },
+    {
+      "id": "weekly_tokens",
+      "kind": "weekly",
+      "usedPercent": 61,
+      "resetsAt": "2026-11-24T00:00:00Z"
+    },
+    {
+      "id": "mcp",
+      "kind": "monthly",
+      "usedPercent": 18,
+      "resetsAt": "2026-12-01T00:00:00Z"
+    }
+  ],
+  "balances": []
+}

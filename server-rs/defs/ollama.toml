@@ -1,0 +1,96 @@
+schema = 1
+id = "ollama"
+label = "Ollama Cloud"
+color = "#FF6B00"
+status = "stable"
+category = "apiKey"
+key_url = "https://ollama.com/settings/keys"
+# source: https://docs.ollama.com/api/balance  (included/purchased credits, legacy session/weekly limits)
+# source: https://docs.ollama.com/api/cloud-usage (totals.usage_usd spend, USD)
+docs = "https://docs.ollama.com/api/balance"
+auth = "apiKey"
+key_hosts = ["ollama.com"]
+# docs: 10 requests/minute per user, "recommend polling once per minute"
+poll_seconds = 60
+plan = "Ollama Cloud"
+
+# Included monthly credits: allowance - remaining -> used, allowance -> limit.
+# Legacy plans return included.session / included.weekly instead; those windows
+# are skipped (skip_if_null) for modern plans and vice versa.
+[[request]]
+id = "balance"
+method = "GET"
+url = "https://ollama.com/api/balance"
+headers = { Authorization = "Bearer {{key}}" }
+timeout_seconds = 10
+
+[[request]]
+id = "usage"
+method = "GET"
+url = "https://ollama.com/api/usage?range=24h"
+headers = { Authorization = "Bearer {{key}}" }
+timeout_seconds = 10
+
+[[window]]
+id = "included"
+kind = "monthly"
+label = "Included credits"
+from = "balance"
+remaining = "$.included.balance_usd"
+limit = "$.included.allowance_usd"
+resets_at = "$.included.period.until"
+resets_at_format = "iso8601"
+skip_if_null = ["limit"]
+provenance = "official"
+
+[[window]]
+id = "session"
+kind = "session"
+label = "Session limit (legacy plan)"
+from = "balance"
+used_percent = "$.included.session.remaining_percent"
+transform = ["invert"]
+resets_at = "$.included.session.resets_at"
+resets_at_format = "iso8601"
+skip_if_null = ["used_percent"]
+provenance = "official"
+
+[[window]]
+id = "weekly"
+kind = "weekly"
+label = "Weekly limit (legacy plan)"
+from = "balance"
+used_percent = "$.included.weekly.remaining_percent"
+transform = ["invert"]
+resets_at = "$.included.weekly.resets_at"
+resets_at_format = "iso8601"
+skip_if_null = ["used_percent"]
+provenance = "official"
+
+[[balance]]
+id = "included_credits"
+label = "Included credits left"
+kind = "credit"
+from = "balance"
+amount = "$.included.balance_usd"
+limit = "$.included.allowance_usd"
+currency = "USD"
+provenance = "official"
+
+[[balance]]
+id = "purchased_credits"
+label = "Purchased credits"
+kind = "credit"
+from = "balance"
+amount = "$.purchased.balance_usd"
+currency = "USD"
+provenance = "official"
+
+[[balance]]
+id = "usage_24h"
+label = "Spend (24 hours)"
+kind = "spend"
+from = "usage"
+amount = "$.totals.usage_usd"
+currency = "USD"
+provenance = "official"

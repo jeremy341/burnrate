@@ -1,0 +1,12 @@
+{
+  "plan_status": {
+    "plan_info": {
+      "plan_name": "Windsurf Pro"
+    },
+    "plan_end": 1796083200,
+    "daily_quota_remaining_percent": 60,
+    "weekly_quota_remaining_percent": 30,
+    "daily_quota_reset_at_unix": 1796169600,
+    "weekly_quota_reset_at_unix": 1796601600
+  }
+}

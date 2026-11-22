@@ -1,0 +1,33 @@
+# AWS Bedrock.
+# source: https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring.html
+# source: https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_GetCostAndUsage.html
+# NO USAGE API: Bedrock has no per-key balance or usage API. Spend is in AWS Cost
+# Explorer (GetCostAndUsage, billed at $0.01 per request) and token/request totals
+# in CloudWatch; both require AWS SigV4 signing with an access key/secret, which
+# the definition schema cannot express. CloudWatch metrics are rolling totals, not
+# a remaining balance.
+# CATALOG NOTE: disabled - SigV4-only Cost Explorer; use a local budget + logs.
+schema = 1
+id = "bedrock"
+label = "AWS Bedrock"
+color = "#FF9900"
+status = "disabled"
+category = "admin"
+docs = "https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring.html"
+# auth = "none" is a schema placeholder: AWS requests need SigV4 (access key +
+# secret + region), not a bearer API key.
+auth = "none"
+poll_seconds = 300
+plan = "AWS Bedrock"
+
+# Schema-only placeholder so the definition parses (1..4 requests required).
+# Never executed while status = "disabled"; documents the Cost Explorer query
+# that would return Bedrock spend. SigV4 must be supplied by native Rust code.
+# source: https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_GetCostAndUsage.html
+[[request]]
+id = "cost"
+method = "POST"
+url = "https://ce.us-east-1.amazonaws.com/"
+headers = { "Content-Type" = "application/x-amz-json-1.1", "X-Amz-Target" = "AWSInsightsIndexService.GetCostAndUsage" }
+body = '''{"TimePeriod":{"Start":"2026-11-01","End":"2026-12-01"},"Granularity":"MONTHLY","Metrics":["UnblendedCost"],"Filter":{"Dimensions":{"Key":"SERVICE","Values":["Amazon Bedrock"]}}}'''
+timeout_seconds = 10

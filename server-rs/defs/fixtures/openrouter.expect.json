@@ -1,0 +1,14 @@
+{
+  "windows": [
+    {
+      "id": "key-limit",
+      "kind": "monthly",
+      "usedPercent": 25.5,
+      "resetsAt": "2026-12-01T00:00:00Z"
+    }
+  ],
+  "balances": [
+    { "id": "key-cap-remaining", "kind": "cap", "amount": 74.5, "currency": "USD" },
+    { "id": "credits-used", "kind": "spend", "amount": 25.5, "currency": "USD" }
+  ]
+}

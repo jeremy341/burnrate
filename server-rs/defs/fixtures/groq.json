@@ -1,0 +1,11 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "openai/gpt-oss-120b",
+      "object": "model",
+      "created": 0,
+      "owned_by": "groq"
+    }
+  ]
+}

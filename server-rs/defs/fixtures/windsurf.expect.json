@@ -1,0 +1,7 @@
+{
+  "windows": [
+    { "id": "daily_quota", "kind": "other", "usedPercent": 40 },
+    { "id": "weekly_quota", "kind": "weekly", "usedPercent": 70 }
+  ],
+  "balances": []
+}

@@ -1,0 +1,15 @@
+{
+  "windows": [
+    {
+      "id": "included",
+      "kind": "monthly",
+      "usedPercent": 27.5,
+      "resetsAt": "2026-10-15T09:30:00Z"
+    }
+  ],
+  "balances": [
+    { "id": "included_credits", "kind": "credit", "amount": 72.5, "currency": "USD" },
+    { "id": "purchased_credits", "kind": "credit", "amount": 25, "currency": "USD" },
+    { "id": "usage_24h", "kind": "spend", "amount": 0.01718, "currency": "USD" }
+  ]
+}

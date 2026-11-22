@@ -1,0 +1,6 @@
+{
+  "windows": [],
+  "balances": [
+    { "id": "deepseek-balance", "kind": "credit", "amount": 110.0, "currency": "USD" }
+  ]
+}

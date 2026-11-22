@@ -2,7 +2,7 @@
 // `token_count` events carry neither model nor service tier, so both are carried forward from the
 // most recent `turn_context` and `thread_settings_applied`. Forked sessions copy their parent's
 // history right after the session meta; that copy is already billed in the parent.
-use super::{env_path, home, lines, walk, FileInfo, Source};
+use super::{config_dirs, env_path, home, lines, walk, FileInfo, Source};
 use crate::types::{parse_ts_ms, ReadResult, Record};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,14 @@ fn read_usage(value: Option<&Value>) -> Option<Cu> {
     let input = raw.get("input_tokens")?.as_f64()?;
     let output = raw.get("output_tokens")?.as_f64()?;
     let num = |k: &str, d: f64| raw.get(k).and_then(Value::as_f64).unwrap_or(d);
-    let u = [input, num(KEYS[1], 0.0), num(KEYS[2], 0.0), output, num(KEYS[4], 0.0), num(KEYS[5], input + output)];
+    let u = [
+        input,
+        num(KEYS[1], 0.0),
+        num(KEYS[2], 0.0),
+        output,
+        num(KEYS[4], 0.0),
+        num(KEYS[5], input + output),
+    ];
     let ok = u.iter().all(|v| v.fract() == 0.0 && *v >= 0.0) && u[1] + u[2] <= u[0] && u[4] <= u[3];
     ok.then_some(u)
 }
@@ -93,7 +100,12 @@ fn rebase(s: &mut State, cumulative: Cu, ts: f64) {
 
 /// Bill requests an interrupted turn never reported only when the records since the previous
 /// snapshot explain the whole gap.
-fn bridged(previous: Option<Cu>, cumulative: &Cu, last: &Cu, pending: &Option<Vec<Unreported>>) -> Option<Vec<Unreported>> {
+fn bridged(
+    previous: Option<Cu>,
+    cumulative: &Cu,
+    last: &Cu,
+    pending: &Option<Vec<Unreported>>,
+) -> Option<Vec<Unreported>> {
     let previous = previous?;
     let pending = pending.as_ref()?;
     for k in 0..6 {
@@ -110,13 +122,19 @@ fn bridged(previous: Option<Cu>, cumulative: &Cu, last: &Cu, pending: &Option<Ve
     });
     let remainder = read_usage(Some(&json))?;
     let mut out: Vec<Unreported> = pending[..pending.len() - 1].to_vec();
-    out.push(Unreported { attr: final_req.attr.clone(), usage: remainder });
+    out.push(Unreported {
+        attr: final_req.attr.clone(),
+        usage: remainder,
+    });
     out.retain(|r| r.usage[0] + r.usage[3] > 0.0);
     Some(out)
 }
 
 fn discarded(pending: &Option<Vec<Unreported>>, last: &Cu) -> u32 {
-    match pending.as_ref().and_then(|p| p.last().map(|f| (p.len(), f))) {
+    match pending
+        .as_ref()
+        .and_then(|p| p.last().map(|f| (p.len(), f)))
+    {
         None => 0,
         Some((len, f)) => (len - usize::from(f.usage == *last)) as u32,
     }
@@ -126,7 +144,8 @@ fn is_forked_meta(p: &Value) -> bool {
     if p.get("forked_from_id").is_some_and(Value::is_string) {
         return true;
     }
-    p.pointer("/source/subagent/thread_spawn/parent_thread_id").is_some_and(Value::is_string)
+    p.pointer("/source/subagent/thread_spawn/parent_thread_id")
+        .is_some_and(Value::is_string)
 }
 
 fn is_fork_copy(s: &mut State, ts: f64) -> bool {
@@ -156,7 +175,11 @@ fn request(s: &State, usage: &Cu, a: &Attribution, key: Option<String>) -> Recor
 }
 
 fn attribution(s: &State, ts: f64) -> Attribution {
-    Attribution { ts, model: s.model.clone(), speed: s.speed }
+    Attribution {
+        ts,
+        model: s.model.clone(),
+        speed: s.speed,
+    }
 }
 
 fn signature(u: &Cu) -> String {
@@ -164,7 +187,9 @@ fn signature(u: &Cu) -> String {
 }
 
 fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
-    let Some(p) = rec.get("payload").filter(|v| v.is_object()) else { return Vec::new() };
+    let Some(p) = rec.get("payload").filter(|v| v.is_object()) else {
+        return Vec::new();
+    };
     let payload_type = p.get("type").and_then(Value::as_str);
     let rec_type = rec.get("type").and_then(Value::as_str);
 
@@ -173,7 +198,11 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
             return Vec::new();
         }
         s.saw_meta = true;
-        if let Some(id) = p.get("id").or_else(|| p.get("session_id")).and_then(Value::as_str) {
+        if let Some(id) = p
+            .get("id")
+            .or_else(|| p.get("session_id"))
+            .and_then(Value::as_str)
+        {
             s.session = id.to_string();
         }
         let ts = parse_ts_ms(rec.get("timestamp"));
@@ -193,11 +222,17 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
     if rec_type == Some("token_usage_record") {
         let ts = parse_ts_ms(rec.get("timestamp"));
         let usage = read_usage(p.get("usage"));
-        let (Some(ts), Some(usage)) = (ts, usage) else { return Vec::new() };
+        let (Some(ts), Some(usage)) = (ts, usage) else {
+            return Vec::new();
+        };
         if s.model.is_empty() || is_fork_copy(s, ts) {
             return Vec::new();
         }
-        if let Some(response_id) = p.get("response_id").and_then(Value::as_str).filter(|r| !r.is_empty()) {
+        if let Some(response_id) = p
+            .get("response_id")
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty())
+        {
             let pending = s.unreported.take().unwrap_or_default();
             s.ledger_active = true;
             for r in &pending {
@@ -205,14 +240,20 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
             }
             s.last_cumulative = advance(s.last_cumulative, &usage);
             date_baseline(s, ts);
-            let mut out: Vec<Record> = pending.iter().map(|r| request(s, &r.usage, &r.attr, None)).collect();
-            let key = serde_json::to_string(&serde_json::json!(["codex", s.session, response_id])).unwrap_or_default();
+            let mut out: Vec<Record> = pending
+                .iter()
+                .map(|r| request(s, &r.usage, &r.attr, None))
+                .collect();
+            let key = serde_json::to_string(&serde_json::json!(["codex", s.session, response_id]))
+                .unwrap_or_default();
             out.push(request(s, &usage, &attribution(s, ts), Some(key)));
             return out;
         }
         s.ledger_active = false;
         let attr = attribution(s, ts);
-        s.unreported.get_or_insert_with(Vec::new).push(Unreported { attr, usage });
+        s.unreported
+            .get_or_insert_with(Vec::new)
+            .push(Unreported { attr, usage });
         return Vec::new();
     }
     if payload_type == Some("thread_settings_applied") {
@@ -224,15 +265,23 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
     if payload_type != Some("token_count") {
         return Vec::new();
     }
-    let Some(info) = p.get("info").filter(|v| v.is_object()) else { return Vec::new() };
-    let Some(ts) = parse_ts_ms(rec.get("timestamp")) else { return Vec::new() };
+    let Some(info) = p.get("info").filter(|v| v.is_object()) else {
+        return Vec::new();
+    };
+    let Some(ts) = parse_ts_ms(rec.get("timestamp")) else {
+        return Vec::new();
+    };
     if s.model.is_empty() {
         return Vec::new();
     }
     let last = read_usage(info.get("last_token_usage"));
     let raw_cumulative = info.get("total_token_usage").filter(|v| !v.is_null());
     let has_cumulative = raw_cumulative.is_some();
-    let cumulative = if has_cumulative { read_usage(raw_cumulative) } else { None };
+    let cumulative = if has_cumulative {
+        read_usage(raw_cumulative)
+    } else {
+        None
+    };
 
     if is_fork_copy(s, ts) {
         let sig = last.as_ref().map(signature);
@@ -278,7 +327,8 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
     let mut unreported: Vec<Unreported> = Vec::new();
     if let Some(c) = cumulative {
         let restarted = c == last;
-        let sequence_start = serde_json::to_string(&serde_json::json!([ts, last])).unwrap_or_default();
+        let sequence_start =
+            serde_json::to_string(&serde_json::json!([ts, last])).unwrap_or_default();
         if restarted && s.sequence_start.as_deref() == Some(sequence_start.as_str()) {
             s.last_cumulative = previous;
             if latest_at.is_none() {
@@ -301,7 +351,8 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
         if !restarted && !reconciled {
             match bridged(previous, &c, &last, &pending) {
                 None => {
-                    let replayed = latest_at.is_some_and(|l| ts < l || (ts == l && lowered && c[0] + c[3] > 0.0));
+                    let replayed = latest_at
+                        .is_some_and(|l| ts < l || (ts == l && lowered && c[0] + c[3] > 0.0));
                     if replayed {
                         s.last_cumulative = previous;
                         if pending.is_some() {
@@ -331,7 +382,10 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
         date_baseline(s, ts);
     }
     s.last_signature = Some(sig);
-    let mut out: Vec<Record> = unreported.iter().map(|r| request(s, &r.usage, &r.attr, None)).collect();
+    let mut out: Vec<Record> = unreported
+        .iter()
+        .map(|r| request(s, &r.usage, &r.attr, None))
+        .collect();
     out.push(request(s, &last, &attribution(s, ts), None));
     out
 }
@@ -355,13 +409,21 @@ pub fn parse_file(content: impl Iterator<Item = String>) -> ReadResult {
     let mut records: Vec<Record> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for line in content {
-        let relevant = ["\"token_count\"", "\"token_usage_record\"", "\"turn_context\"", "\"thread_settings_applied\"", "\"session_meta\""]
-            .iter()
-            .any(|m| line.contains(m));
+        let relevant = [
+            "\"token_count\"",
+            "\"token_usage_record\"",
+            "\"turn_context\"",
+            "\"thread_settings_applied\"",
+            "\"session_meta\"",
+        ]
+        .iter()
+        .any(|m| line.contains(m));
         if !relevant {
             continue;
         }
-        let Ok(rec) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(rec) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         for r in parse_record(&rec, &mut s) {
             if let Some(k) = &r.key {
                 if !seen.insert(k.clone()) {
@@ -371,11 +433,64 @@ pub fn parse_file(content: impl Iterator<Item = String>) -> ReadResult {
             records.push(r);
         }
     }
-    ReadResult { records, malformed: s.malformed }
+    ReadResult {
+        records,
+        malformed: s.malformed,
+    }
+}
+
+/// Codex config roots: `CODEX_HOME`, then folders configured in Settings (`providers.sources.codex`),
+/// then XDG config/data dirs and mounted Windows profiles under WSL. Only discovered roots that
+/// already hold sessions are returned so an empty candidate never hides a real one; `~/.codex` is the
+/// last fallback. Nothing is created; a folder reached twice is read once.
+pub fn codex_homes() -> Vec<PathBuf> {
+    codex_homes_from(
+        env_path("CODEX_HOME"),
+        &super::sources::configured("codex"),
+        config_dirs("codex"),
+        &home(),
+    )
+}
+
+/// The environment, configured and discovered part of `codex_homes`, with every input passed in.
+fn codex_homes_from(
+    env: Option<PathBuf>,
+    configured: &[PathBuf],
+    discovered: Vec<PathBuf>,
+    home: &Path,
+) -> Vec<PathBuf> {
+    use super::sources::push_unique;
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(env) = env {
+        push_unique(&mut out, env);
+    }
+    for dir in configured.iter().filter(|d| d.is_dir()) {
+        // Accept the `sessions` folder itself: that is the folder people see the transcripts in.
+        let dir = if dir.file_name().is_some_and(|n| n == "sessions") {
+            dir.parent().map_or_else(|| dir.clone(), Path::to_path_buf)
+        } else {
+            dir.clone()
+        };
+        if dir.is_dir() {
+            push_unique(&mut out, dir);
+        }
+    }
+    for dir in discovered {
+        if dir.join("sessions").exists() || dir.join("archived_sessions").exists() {
+            push_unique(&mut out, dir);
+        }
+    }
+    if out.is_empty() {
+        out.push(home.join(".codex"));
+    }
+    out
 }
 
 fn codex_home() -> PathBuf {
-    env_path("CODEX_HOME").unwrap_or_else(|| home().join(".codex"))
+    codex_homes()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| home().join(".codex"))
 }
 
 pub struct Codex;
@@ -393,13 +508,49 @@ impl Source for Codex {
     fn files(&self) -> Vec<FileInfo> {
         let accept = |n: &str| n.ends_with(".jsonl") || n.ends_with(".jsonl.zst");
         let mut out = Vec::new();
-        walk(&codex_home().join("sessions"), &accept, &mut out);
-        walk(&codex_home().join("archived_sessions"), &accept, &mut out);
+        for root in codex_homes() {
+            walk(&root.join("sessions"), &accept, &mut out);
+            walk(&root.join("archived_sessions"), &accept, &mut out);
+        }
         out
     }
     fn read(&self, path: &Path, since_ms: f64) -> Result<ReadResult, String> {
         let mut result = parse_file(lines(path)?);
         result.records.retain(|r| r.ts >= since_ms);
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn homes_prefer_environment_then_configured_then_discovery_with_no_repeats() {
+        let root = std::env::temp_dir().join(format!("burnrate-codex-homes-{}", std::process::id()));
+        let env = root.join("env-codex");
+        let configured = root.join("elsewhere").join("sessions");
+        let discovered = root.join("home").join(".codex");
+        for dir in [env.clone(), configured.parent().unwrap().to_path_buf(), discovered.clone()] {
+            fs::create_dir_all(dir.join("sessions")).unwrap();
+        }
+        let mut discovered_dirs = vec![discovered.clone(), root.join("home").join(".config").join("codex")];
+        discovered_dirs.push(discovered.parent().unwrap().join(".codex-dupe"));
+        // Environment first, a configured `sessions` folder is accepted, discovery adds the rest.
+        let got = codex_homes_from(
+            Some(env.clone()),
+            &[configured.clone()],
+            discovered_dirs.clone(),
+            &root.join("nothing"),
+        );
+        assert_eq!(got, vec![env.clone(), configured.parent().unwrap().to_path_buf(), discovered.clone()]);
+        // A configured folder reached twice with discovery is read once.
+        let got = codex_homes_from(None, &[discovered.clone()], discovered_dirs, &root.join("nothing"));
+        assert_eq!(got, vec![discovered.clone()]);
+        // Nothing anywhere: the classic `~/.codex` fallback.
+        let got = codex_homes_from(None, &[], vec![], &root.join("home"));
+        assert_eq!(got, vec![root.join("home").join(".codex")]);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

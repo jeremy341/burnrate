@@ -1,0 +1,27 @@
+{
+  "object": "list",
+  "organization_id": "org_example",
+  "billing_period": "2026-06",
+  "earliest_window_start": "2026-06-30T00:00:00Z",
+  "latest_window_end": "2026-07-01T00:00:00Z",
+  "currency": "USD",
+  "data": [
+    {
+      "date": "2026-06-30",
+      "start_time": "2026-06-30T00:00:00Z",
+      "end_time": "2026-07-01T00:00:00Z",
+      "line_items": [
+        {
+          "product_name": "Serverless Inference - Input Tokens",
+          "quantity": "1000",
+          "unit_price": "0.000001",
+          "cost": "0.001",
+          "pricing_dimensions": {},
+          "attributes": {},
+          "applied_credit": { "type": "PREPAID" }
+        }
+      ]
+    }
+  ],
+  "next_cursor": null
+}

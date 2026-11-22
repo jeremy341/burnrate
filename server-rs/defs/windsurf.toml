@@ -1,0 +1,54 @@
+# Windsurf (Codeium) - daily/weekly quota from the private GetPlanStatus service.
+# source: https://raw.githubusercontent.com/steipete/CodexBar/main/docs/windsurf.md
+# source: docs/research/03-universal-providers.md section 2.1 "Windsurf" (evidence [C]).
+# UNVERIFIED: the live endpoint is ConnectRPC/protobuf and needs four browser-session tokens
+# (devin_session_token, devin_auth1_token, devin_account_id, devin_primary_org_id). This schema
+# allows only one {{key}} placeholder and a JSON body, so the body below is the DECODED equivalent
+# of protobuf fields 1 (auth_token) and 2 (include_top_up_status) and will not be accepted by the
+# live protobuf service without engine support. Cookie/localStorage extraction is deliberately not
+# part of this definition; the local state.vscdb cache is handled by a log/file reader instead.
+schema = 1
+id = "windsurf"
+label = "Windsurf"
+color = "#5b6ef5"
+status = "experimental"
+category = "agent"
+docs = "https://windsurf.com/profile"
+auth = "apiKey"
+key_hosts = ["windsurf.com"]
+poll_seconds = 300
+plan = "Windsurf"
+
+[[request]]
+id = "plan"
+method = "POST"
+url = "https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetPlanStatus"
+headers = { "Content-Type" = "application/proto", "Connect-Protocol-Version" = "1", Origin = "https://windsurf.com", Referer = "https://windsurf.com/profile", "x-auth-token" = "{{key}}", "x-devin-session-token" = "{{key}}" }
+body = "{\"auth_token\":\"{{key}}\",\"include_top_up_status\":true}"
+timeout_seconds = 10
+
+[[window]]
+id = "daily_quota"
+kind = "other"
+label = "Daily quota"
+from = "plan"
+used_percent = "$.plan_status.daily_quota_remaining_percent"
+transform = ["invert", "clamp:0:100"]
+resets_at = "$.plan_status.daily_quota_reset_at_unix"
+resets_at_format = "unix_s"
+window_minutes = 1440
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+[[window]]
+id = "weekly_quota"
+kind = "weekly"
+label = "Weekly quota"
+from = "plan"
+used_percent = "$.plan_status.weekly_quota_remaining_percent"
+transform = ["invert", "clamp:0:100"]
+resets_at = "$.plan_status.weekly_quota_reset_at_unix"
+resets_at_format = "unix_s"
+window_minutes = 10080
+skip_if_null = ["used_percent"]
+provenance = "unofficial"

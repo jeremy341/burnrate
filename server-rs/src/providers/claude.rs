@@ -1,6 +1,7 @@
+use super::usage_cache::{self, ProbeError, Resolved};
 use super::*;
 use crate::readers::{env_path, home};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const SESSION_MINS: f64 = 5.0 * 60.0;
 const WEEK_MINS: f64 = 7.0 * 24.0 * 60.0;
@@ -46,7 +47,8 @@ pub fn usage_to_windows(usage: &Value) -> Vec<Window> {
     for (id, kind, label, mins) in [("five_hour", "session", "Session", SESSION_MINS), ("seven_day", "weekly", "Weekly", WEEK_MINS)] {
         let Some(bucket) = usage.get(id).filter(|b| b.is_object()) else { continue };
         let Some(used) = bucket.get("utilization").and_then(Value::as_f64) else { continue };
-        windows.push(Window::new(id, kind, label, used).mins(Some(mins)).resets(iso(bucket.get("resets_at"))));
+        // The `api/oauth/usage` endpoint is an undocumented Claude Code endpoint: `unofficial`.
+        windows.push(Window::new(id, kind, label, used).provenance("unofficial").mins(Some(mins)).resets(iso(bucket.get("resets_at"))));
     }
     for limit in usage.get("limits").and_then(Value::as_array).into_iter().flatten() {
         let name = limit.pointer("/scope/model/display_name").and_then(Value::as_str);
@@ -63,12 +65,36 @@ pub fn usage_to_windows(usage: &Value) -> Vec<Window> {
             }
             collapsed.push(c);
         }
-        windows.push(Window::new(&format!("seven_day_{collapsed}"), "weekly", &format!("Weekly · {name}"), percent).mins(Some(WEEK_MINS)).resets(iso(limit.get("resets_at"))));
+        windows.push(Window::new(&format!("seven_day_{collapsed}"), "weekly", &format!("Weekly · {name}"), percent).provenance("unofficial").mins(Some(WEEK_MINS)).resets(iso(limit.get("resets_at"))));
     }
     if let Some(spend) = spend_percent(usage) {
-        windows.push(Window::new("monthly_spend", "monthly", "Monthly spend", spend));
+        windows.push(Window::new("monthly_spend", "monthly", "Monthly spend", spend).provenance("unofficial"));
     }
     windows
+}
+
+/// Where an account's limits come from. We only ever READ a token that the user's own Claude Code
+/// already stored locally; we never call Anthropic's token-refresh endpoint, never write to
+/// Claude's config directory, and never trigger a browser sign-in. Another app's credentials are
+/// not ours to refresh (asserted by the tests in `statusline.rs` and at the end of this file).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeSource {
+    /// Read the local OAuth token and call Claude Code's usage endpoint (opt-in, `unofficial`).
+    OAuth,
+    /// Use the rate limits pushed by Claude Code's statusline hook (`statusline`).
+    Statusline,
+    /// No probe at all: only local transcripts provide cost/token data.
+    Transcripts,
+}
+
+/// Choose the primary source. When the OAuth probe fails we still fall back to a fresh statusline
+/// snapshot (see `read_account`), so the flag only needs to decide whether to probe at all.
+pub fn choose_source(statusline_fresh: bool, oauth_probe_enabled: bool) -> ProbeSource {
+    match (oauth_probe_enabled, statusline_fresh) {
+        (false, true) => ProbeSource::Statusline,
+        (false, false) => ProbeSource::Transcripts,
+        (true, _) => ProbeSource::OAuth,
+    }
 }
 
 pub struct Claude;
@@ -86,11 +112,16 @@ impl Provider for Claude {
     fn auth(&self) -> Auth {
         Auth::LocalLogin
     }
+    fn hint(&self) -> &'static str {
+        "Sign in with the Claude Code CLI"
+    }
     fn has_login(&self) -> bool {
         credentials_path().exists()
     }
     fn read(&self, _keys: &KeyStore) -> Vec<Value> {
-        // One account per Claude Code config directory that holds a login (`~/.claude`, `~/.claude-work`, ...).
+        let oauth_probe_enabled = crate::providers::claude_oauth_probe_enabled();
+        // One account per Claude Code config directory that holds a login (`~/.claude`, `~/.claude-work`, ...)
+        // or has pushed a fresh statusline snapshot.
         let mut dirs = crate::readers::claude_config_dirs();
         if dirs.is_empty() {
             dirs.push(config_dir());
@@ -99,11 +130,11 @@ impl Provider for Claude {
         std::thread::scope(|scope| {
             let handles: Vec<_> = dirs
                 .iter()
-                .filter(|dir| dir.join(".credentials.json").exists())
+                .filter(|dir| dir.join(".credentials.json").exists() || statusline::fresh_for(dir).is_some())
                 .map(|dir| {
                     let account_file = if **dir == default_dir { home().join(".claude.json") } else { dir.join(".claude.json") };
                     let id = dir.file_name().map(|n| n.to_string_lossy().trim_start_matches('.').to_string()).unwrap_or_else(|| "claude".into());
-                    scope.spawn(move || read_account(dir, &account_file, &id))
+                    scope.spawn(move || read_account(dir, &account_file, &id, oauth_probe_enabled))
                 })
                 .collect();
             handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
@@ -111,8 +142,7 @@ impl Provider for Claude {
     }
 }
 
-fn read_account(dir: &std::path::Path, account_file: &std::path::Path, id: &str) -> Option<Value> {
-    let token = read_json(&dir.join(".credentials.json")).and_then(|c| c.pointer("/claudeAiOauth/accessToken").and_then(Value::as_str).map(|t| t.trim().to_string())).filter(|t| !t.is_empty())?;
+fn account_head(account_file: &Path, id: &str) -> Value {
     let identity = read_json(account_file).and_then(|c| c.get("oauthAccount").cloned());
     let name = identity.as_ref().and_then(|i| i.get("displayName")).and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
     let mut head = json!({"id": format!("claude-{id}"), "driver": "claudeAgent", "label": name.clone().unwrap_or_else(|| id.to_string()), "plan": "Claude Subscription"});
@@ -122,6 +152,60 @@ fn read_account(dir: &std::path::Path, account_file: &std::path::Path, id: &str)
     if let Some(email) = identity.as_ref().and_then(|i| i.get("emailAddress")).and_then(Value::as_str) {
         head["email"] = json!(email);
     }
+    head
+}
+
+/// Prefer the user's own statusline data when the probe is off or it failed; never invent numbers.
+fn fallback_or_unavailable(head: Value, statusline: Option<Vec<Window>>, message: String) -> Value {
+    match statusline {
+        Some(windows) => account_with(head, windows),
+        None => unavailable_account(head, message),
+    }
+}
+
+fn read_account(dir: &Path, account_file: &Path, id: &str, oauth_probe_enabled: bool) -> Option<Value> {
+    let statusline = statusline::fresh_for(dir);
+    match choose_source(statusline.is_some(), oauth_probe_enabled) {
+        ProbeSource::Statusline => {
+            let head = account_head(account_file, id);
+            Some(account_with(head, statusline.unwrap_or_default()))
+        }
+        ProbeSource::Transcripts => {
+            // `providers.claudeOAuthProbe = false` means no token is read, no request is sent and
+            // another app's files are never touched. Cost/tokens still come from local transcripts.
+            None
+        }
+        ProbeSource::OAuth => {
+            // Read the existing token only. No refresh endpoint, no file writes, no interactive sign-in.
+            let token = read_json(&dir.join(".credentials.json"))
+                .and_then(|c| c.pointer("/claudeAiOauth/accessToken").and_then(Value::as_str).map(|t| t.trim().to_string()))
+                .filter(|t| !t.is_empty())?;
+            let head = account_head(account_file, id);
+            // Every caller (the UI, the scheduler, repeated /api/limits calls) goes through the shared
+            // cache: at most one probe per account every five minutes, last good values on failure.
+            let now = usage_cache::now_ms();
+            let cred_mtime_ms = std::fs::metadata(dir.join(".credentials.json"))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64);
+            let resolved = usage_cache::global().resolve(&format!("claude-{id}"), now, cred_mtime_ms, || probe_usage(&token));
+            Some(match resolved {
+                Resolved::Fresh(good) => account_from_good(head, &good),
+                Resolved::Stale { good, message } => match statusline {
+                    // The statusline hook is live data from the user's own Claude Code: better than old numbers.
+                    Some(windows) => account_with(head, windows),
+                    None => stale_account(head, &good, &message, now),
+                },
+                Resolved::Failed(message) => fallback_or_unavailable(head, statusline, message),
+            })
+        }
+    }
+}
+
+/// One real request to Claude's usage endpoint (`unofficial`). Errors keep the status and
+/// `Retry-After` so the cache can back off; no response body or token is ever put in a message.
+fn probe_usage(token: &str) -> Result<(Vec<Value>, Option<Value>), ProbeError> {
     let result = agent()
         .get("https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1")
         .set("Authorization", &format!("Bearer {token}"))
@@ -129,20 +213,61 @@ fn read_account(dir: &std::path::Path, account_file: &std::path::Path, id: &str)
         // The endpoint can answer 429 without a Claude Code user agent.
         .set("User-Agent", &format!("claude-cli/{} (external, cli)", cli_version()))
         .call();
-    Some(match result {
+    match result {
         Ok(res) => match res.into_json::<Value>() {
             Ok(usage) => {
-                let mut account = account_with(head, usage_to_windows(&usage));
-                if let Some(credits) = reset_credits(usage.get("cedar_ember")) {
-                    account["limits"]["resetCredits"] = credits;
+                let windows: Vec<Value> = usage_to_windows(&usage).iter().map(Window::json).collect();
+                if windows.is_empty() {
+                    return Err(ProbeError::Transient { message: retry_soon_message(None), retry_after_secs: None });
                 }
-                account
+                Ok((windows, reset_credits(usage.get("cedar_ember"))))
             }
-            Err(e) => unavailable_account(head, format!("Claude usage unavailable ({e}).")),
+            Err(_) => Err(ProbeError::Transient { message: retry_soon_message(None), retry_after_secs: None }),
         },
-        Err(ureq::Error::Status(code, _)) => unavailable_account(head, format!("Claude usage unavailable (HTTP {code}).")),
-        Err(_) => unavailable_account(head, "Claude usage unavailable (error).".into()),
-    })
+        Err(ureq::Error::Status(code, res)) => {
+            let retry_after = usage_cache::parse_retry_after(res.header("retry-after"));
+            let detail = res.into_string().unwrap_or_default();
+            let message = auth_failure_message("Claude Code", code, &detail, retry_soon_message(Some(code)));
+            if is_login_expired(&message) {
+                Err(ProbeError::Auth { message })
+            } else {
+                Err(ProbeError::Transient { message, retry_after_secs: retry_after })
+            }
+        }
+        Err(_) => Err(ProbeError::Transient { message: "Burnrate could not reach Claude. It will try again soon.".into(), retry_after_secs: None }),
+    }
+}
+
+/// What the user reads when a usage check fails for a reason that is not their login: what
+/// happened and that it retries, never a status code.
+fn retry_soon_message(status: Option<u16>) -> String {
+    match status {
+        Some(429) => "Claude is limiting usage checks right now. Burnrate will try again soon.".into(),
+        Some(500..=599) => "Claude's usage service is having problems. Burnrate will try again soon.".into(),
+        _ => "Claude usage could not be read. Burnrate will try again soon.".into(),
+    }
+}
+
+fn limits_from_good(good: &usage_cache::Good) -> Value {
+    json!({"checkedAt": iso_ms(good.at_ms as f64).unwrap_or_else(iso_now), "windows": good.windows})
+}
+
+fn account_from_good(mut head: Value, good: &usage_cache::Good) -> Value {
+    head["limits"] = limits_from_good(good);
+    if let Some(credits) = &good.credits {
+        head["limits"]["resetCredits"] = credits.clone();
+    }
+    head
+}
+
+/// The last good values, marked stale so the UI can say how old they are instead of showing nothing.
+fn stale_account(mut head: Value, good: &usage_cache::Good, reason: &str, now_ms: i64) -> Value {
+    head["limits"] = limits_from_good(good);
+    head["limits"]["stale"] = json!(true);
+    head["limits"]["staleSince"] = json!(iso_ms(good.at_ms as f64).unwrap_or_else(iso_now));
+    head["limits"]["staleMessage"] = json!(usage_cache::stale_message(good.at_ms, now_ms));
+    head["limits"]["staleReason"] = json!(reason);
+    head
 }
 
 const RESET_KINDS: [(&str, &str, &str); 4] = [
@@ -235,4 +360,127 @@ fn cli_version() -> &'static str {
         let text = run("claude").or_else(|| run("claude.cmd")).unwrap_or_default();
         text.split_whitespace().find(|w| w.split('.').count() == 3 && w.chars().all(|c| c.is_ascii_digit() || c == '.')).unwrap_or("2.1.273").to_string()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::statusline;
+    use std::sync::Mutex;
+
+    use crate::providers::TEST_GLOBALS as ENV_GLOBAL;
+
+    const OAUTH_USAGE: &str = include_str!("claude-oauth-usage.json");
+    const STATUSLINE: &str = include_str!("claude-statusline.json");
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> EnvGuard {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            EnvGuard { key, previous }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn oauth_windows_are_labelled_unofficial() {
+        let usage: Value = serde_json::from_str(OAUTH_USAGE).expect("fixture");
+        let windows = usage_to_windows(&usage);
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().all(|w| w.provenance == Some("unofficial")));
+        assert_eq!(windows[0].id, "five_hour");
+        assert!((windows[0].used - 27.5).abs() < f64::EPSILON);
+        assert_eq!(windows[0].mins, Some(SESSION_MINS));
+        assert_eq!(windows[1].id, "seven_day");
+        assert!((windows[1].used - 63.25).abs() < f64::EPSILON);
+        assert_eq!(windows[1].json()["provenance"], "unofficial");
+    }
+
+    #[test]
+    fn auth_failures_produce_the_stable_login_expired_prefix() {
+        let message = auth_failure_message("Claude Code", 401, "", "unused".into());
+        assert_eq!(message, login_expired_message("Claude Code"));
+        assert!(is_login_expired(&message));
+        assert!(message.starts_with("login-expired:"));
+        assert!(is_login_expired(&auth_failure_message("ChatGPT", 403, "", "unused".into())));
+        assert!(!is_login_expired(&auth_failure_message("Claude Code", 500, "", "Claude usage unavailable (HTTP 500).".into())));
+        assert!(is_login_expired(&auth_failure_message("Claude Code", 400, "{\"error\":\"token expired\"}", "unused".into())));
+    }
+
+    #[test]
+    fn probe_disabled_never_touches_claude_credentials_or_tokens() {
+        let _guard = ENV_GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "burnrate-claude-no-refresh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+        ));
+        let config = dir.join(".claude");
+        let _ = std::fs::create_dir_all(config.join("projects"));
+        let credentials = config.join(".credentials.json");
+        // A throwaway token in a temp dir: never a real Claude credential.
+        let fake = br#"{"claudeAiOauth":{"accessToken":"throwaway-token-not-a-real-key"}}"#;
+        std::fs::write(&credentials, fake).expect("temp credentials");
+        let before = std::fs::read(&credentials).expect("temp credentials");
+
+        let _home = EnvGuard::set("USERPROFILE", &dir);
+        let _config = EnvGuard::set("CLAUDE_CONFIG_DIR", &config);
+        crate::providers::set_settings_snapshot(&json!({"providers": {"claudeOAuthProbe": false}}));
+        statusline::clear_for_test();
+
+        let keys = KeyStore::open(&dir);
+        assert!(Claude.read(&keys).is_empty(), "no probe and no statusline data means no account");
+        assert_eq!(std::fs::read(&credentials).expect("temp credentials"), before, "credentials must not be modified");
+        statusline::clear_for_test();
+        crate::providers::set_settings_snapshot(&json!({}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_disabled_uses_statusline_without_reading_credentials() {
+        let _guard = ENV_GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "burnrate-claude-statusline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+        ));
+        let config = dir.join(".claude");
+        let _ = std::fs::create_dir_all(config.join("projects"));
+        let credentials = config.join(".credentials.json");
+        let fake = br#"{"claudeAiOauth":{"accessToken":"throwaway-token-not-a-real-key"}}"#;
+        std::fs::write(&credentials, fake).expect("temp credentials");
+        let before = std::fs::read(&credentials).expect("temp credentials");
+        let transcript = config.join("projects").join("fixture.jsonl");
+
+        let _home = EnvGuard::set("USERPROFILE", &dir);
+        let _config = EnvGuard::set("CLAUDE_CONFIG_DIR", &config);
+        crate::providers::set_settings_snapshot(&json!({"providers": {"claudeOAuthProbe": false}}));
+        statusline::clear_for_test();
+        let mut body: Value = serde_json::from_str(STATUSLINE).expect("fixture");
+        body["transcript_path"] = json!(transcript.to_string_lossy());
+        statusline::ingest(&body);
+
+        let keys = KeyStore::open(&dir);
+        let accounts = Claude.read(&keys);
+        assert_eq!(accounts.len(), 1);
+        let windows = accounts[0].pointer("/limits/windows").and_then(Value::as_array).expect("windows");
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().all(|w| w["provenance"] == "statusline"));
+        assert_eq!(std::fs::read(&credentials).expect("temp credentials"), before, "no token read or refresh");
+
+        statusline::clear_for_test();
+        crate::providers::set_settings_snapshot(&json!({}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

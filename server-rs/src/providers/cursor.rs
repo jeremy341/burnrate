@@ -11,7 +11,8 @@ pub fn usage_to_windows(response: &Value) -> Vec<Window> {
     let mut windows = Vec::new();
     for (id, label) in [("totalPercentUsed", "Overall"), ("autoPercentUsed", "Cursor Models"), ("apiPercentUsed", "Other Models")] {
         let Some(used) = response.pointer(&format!("/planUsage/{id}")).and_then(Value::as_f64).filter(|u| u.is_finite()) else { continue };
-        windows.push(Window::new(id, "monthly", label, used).resets(resets_at.clone()).mins((mins > 0.0).then_some(mins)));
+        // Cursor's dashboard billing endpoint is documented: `official`.
+        windows.push(Window::new(id, "monthly", label, used).provenance("official").resets(resets_at.clone()).mins((mins > 0.0).then_some(mins)));
     }
     windows
 }
@@ -23,6 +24,7 @@ fn read_one(name: &str, api_key: &str) -> Value {
     let exchange = agent().post(&format!("{ENDPOINT}/auth/exchange_user_api_key")).set("Authorization", &format!("Bearer {api_key}")).send_json(json!({}));
     let token = match exchange {
         Ok(res) => res.into_json::<Value>().ok().and_then(|v| v.get("accessToken").and_then(Value::as_str).map(str::to_string)),
+        Err(ureq::Error::Status(401 | 403, _)) => return unavailable_account(head.clone(), login_expired_message("Cursor")),
         Err(ureq::Error::Status(code, _)) => return fail(format!("HTTP {code}")),
         Err(_) => return fail("error".into()),
     };
@@ -67,7 +69,50 @@ impl Provider for Cursor {
     fn auth(&self) -> Auth {
         Auth::ApiKey
     }
+    // Cursor is an agent you use, but Burnrate reads its limits with an API key (no local login to detect).
+    fn category(&self) -> Category {
+        Category::Agent
+    }
+    fn key_url(&self) -> Option<String> {
+        Some("https://cursor.com/dashboard?tab=integrations".into())
+    }
+    fn hint(&self) -> &'static str {
+        "Paste a Cursor API key"
+    }
     fn read(&self, keys: &KeyStore) -> Vec<Value> {
         keys.list("cursor").iter().map(|(n, k)| read_one(n, k)).collect()
+    }
+    fn test_key(&self, key: &str) -> Result<(), String> {
+        // The exchange endpoint is Cursor's real key check; it never stores or logs the key.
+        // A 200 without an accessToken cannot drive `read_one`, so it is not a passing test.
+        let response = match agent()
+            .post(&format!("{ENDPOINT}/auth/exchange_user_api_key"))
+            .set("Authorization", &format!("Bearer {key}"))
+            .send_json(json!({}))
+        {
+            Ok(response) => response,
+            Err(ureq::Error::Status(code, _)) => return Err(test_status_error(code)),
+            Err(_) => return Err("Could not reach the provider".into()),
+        };
+        match response.into_json::<Value>() {
+            Ok(body) if body.get("accessToken").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) => Ok(()),
+            Ok(_) => Err("Could not read the provider's limits".into()),
+            Err(_) => Err("Could not reach the provider".into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn cursor_windows_are_labelled_official() {
+        let body = json!({"billingCycleStart": 1782000000000.0, "billingCycleEnd": 1784589600000.0, "planUsage": {"totalPercentUsed": 20.0}});
+        let windows = usage_to_windows(&body);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].provenance, Some("official"));
+        assert!(windows[0].resets_at.is_some());
     }
 }

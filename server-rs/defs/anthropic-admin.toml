@@ -1,0 +1,44 @@
+# Anthropic organization-level Admin API (legacy Usage and Cost API).
+# source: https://platform.claude.com/docs/en/api/beta/organization/cost_report/retrieve
+# source: https://platform.claude.com/docs/en/manage-claude/usage-cost-api
+# Verified [V] against the official documentation on 2026-11-20. Needs an org Admin API key
+# (sk-ant-admin01-...), an OAuth token with org:admin, or an Analytics API key; it is NOT
+# available to Team plans or individual Console accounts.
+# The usage_report endpoint returns token counts (not money), so only the cost report is
+# mapped to a spend balance. Per official docs, `amount` is a decimal string in cents.
+schema = 1
+id = "anthropic-admin"
+label = "Anthropic Admin"
+color = "#d97757"
+status = "stable"
+category = "admin"
+key_url = "https://platform.claude.com/settings/admin-keys"
+docs = "https://platform.claude.com/docs/en/manage-claude/usage-cost-api"
+auth = "apiKey"
+key_hosts = ["api.anthropic.com"]
+poll_seconds = 300
+plan = "Anthropic organization (admin key)"
+
+# Daily cost buckets, limited to one bucket so the mapped spend is a single day.
+[[request]]
+id = "cost_report"
+method = "GET"
+url = "https://api.anthropic.com/v1/organizations/cost_report?bucket_width=1d&limit=1"
+headers = { "x-api-key" = "{{key}}", "anthropic-version" = "2026-10-21" }
+timeout_seconds = 10
+
+[[balance]]
+id = "daily_cost"
+label = "Daily API cost"
+kind = "spend"
+from = "cost_report"
+# DOC CHECK NEEDED (review 02 #5): confirm against the official cost_report schema whether
+# `data[0].results` can hold multiple entries, and whether `amount` is cent-based for every
+# currency (JPY has no 1/100 minor unit). Until confirmed, keep the single-result mapping and the
+# divide:100 documented above. If several same-currency results are returned, switch `amount` to
+# "sum:$.data[0].results[*].amount" (extract.rs supports the `sum:` prefix); if currencies can be
+# mixed, add one balance per currency rather than summing across them.
+amount = "$.data[0].results[0].amount"
+transform = ["divide:100"]
+currency = { path = "$.data[0].results[0].currency" }
+provenance = "official"

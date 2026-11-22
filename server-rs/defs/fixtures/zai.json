@@ -1,0 +1,49 @@
+{
+  "success": true,
+  "code": 200,
+  "msg": "success",
+  "data": {
+    "planName": "GLM Coding Max",
+    "limits": [
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 3,
+        "number": 5,
+        "percentage": 42,
+        "usage": 2000000,
+        "currentValue": 840000,
+        "remaining": 1160000,
+        "nextResetTime": 1795197600000,
+        "usageDetails": [
+          { "modelCode": "glm-4.6", "usage": 520000 },
+          { "modelCode": "glm-4.5-air", "usage": 320000 }
+        ]
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 6,
+        "number": 1,
+        "percentage": 61,
+        "usage": 10000000,
+        "currentValue": 6100000,
+        "remaining": 3900000,
+        "nextResetTime": 1795478400000,
+        "usageDetails": []
+      },
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "percentage": 18,
+        "usage": 1000,
+        "currentValue": 180,
+        "remaining": 820,
+        "nextResetTime": 1796083200000,
+        "usageDetails": [
+          { "modelCode": "search-prime", "usage": 120 },
+          { "modelCode": "web-reader", "usage": 60 }
+        ]
+      }
+    ]
+  }
+}

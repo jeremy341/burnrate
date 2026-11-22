@@ -1,0 +1,36 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "fixture-session",
+  "transcript_path": "C:\\Users\\tester\\.claude\\projects\\-C--proj\\fixture-session.jsonl",
+  "cwd": "C:\\proj",
+  "model": {
+    "id": "claude-opus-4-6",
+    "display_name": "Opus"
+  },
+  "workspace": {
+    "current_dir": "C:\\proj",
+    "project_dir": "C:\\proj"
+  },
+  "version": "2.1.273",
+  "cost": {
+    "total_cost_usd": 1.23,
+    "total_duration_ms": 60000,
+    "total_api_duration_ms": 5000,
+    "total_lines_added": 0,
+    "total_lines_removed": 0
+  },
+  "context_window": {
+    "used_percentage": 12,
+    "context_window_size": 200000
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 47,
+      "resets_at": 1784589600
+    },
+    "seven_day": {
+      "used_percentage": 36,
+      "resets_at": 1784779200
+    }
+  }
+}

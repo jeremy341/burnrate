@@ -1,0 +1,34 @@
+{
+  "id": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.CostManagement/Query/00000000-0000-0000-0000-000000000000",
+  "name": "00000000-0000-0000-0000-000000000000",
+  "type": "microsoft.costmanagement/Query",
+  "properties": {
+    "nextLink": null,
+    "columns": [
+      {
+        "name": "PreTaxCost",
+        "type": "Number"
+      },
+      {
+        "name": "ResourceGroup",
+        "type": "String"
+      },
+      {
+        "name": "UsageDate",
+        "type": "Number"
+      },
+      {
+        "name": "Currency",
+        "type": "String"
+      }
+    ],
+    "rows": [
+      [
+        12.34,
+        "my-rg",
+        20261120,
+        "USD"
+      ]
+    ]
+  }
+}

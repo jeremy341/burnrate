@@ -1,0 +1,18 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "group": "gpt-4o",
+      "start_time": 1722470400,
+      "end_time": 1722556800,
+      "cost": 12.34
+    },
+    {
+      "group": "gpt-4o-mini",
+      "start_time": 1722470400,
+      "end_time": 1722556800,
+      "cost": 2.11
+    }
+  ],
+  "has_more": false
+}

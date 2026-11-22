@@ -1,0 +1,23 @@
+{
+  "windows": [],
+  "balances": [
+    {
+      "id": "available",
+      "kind": "credit",
+      "amount": 49.58894,
+      "currency": "USD"
+    },
+    {
+      "id": "cash",
+      "kind": "credit",
+      "amount": 3.00001,
+      "currency": "USD"
+    },
+    {
+      "id": "voucher",
+      "kind": "credit",
+      "amount": 46.58893,
+      "currency": "USD"
+    }
+  ]
+}

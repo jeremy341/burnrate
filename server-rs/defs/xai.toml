@@ -1,0 +1,37 @@
+# xAI / Grok API (developer platform) - DISABLED.
+# source: https://docs.x.ai/developers/rest-api-reference/management/billing
+# source: https://docs.x.ai/developers/rest-api-reference/management/auth
+#
+# NO USAGE API REACHABLE WITH A SINGLE CREDENTIAL AND A STATIC URL.
+# The only documented balance/spend source is the Management API:
+#   GET https://management-api.x.ai/v1/billing/teams/{team_id}/prepaid/balance
+#   GET https://management-api.x.ai/v1/billing/teams/{team_id}/postpaid/invoice/preview
+#   POST https://management-api.x.ai/v1/billing/teams/{team_id}/usage
+# Every billing route requires the team id in the path and a *management key* (inference keys are
+# rejected). Definition schema v1 substitutes only {{key}} and only inside headers, so the team id
+# cannot be supplied or carried over from another response (e.g. /auth/management-keys/validation
+# returns teamId, but request-chaining is not part of the schema). A per-key cap (qps/qpm/tpm) is a
+# rate limit, not a percent window, and is not exposed by any documented endpoint.
+#
+# Kept as a disabled definition so the catalog can explain the limitation and so the request below
+# can validate a management key once the engine grows a team-id/field input. Contract issue reported
+# by package 15: the definition schema needs user-supplied fields ({{team_id}}) or response chaining.
+schema = 1
+id = "xai"
+label = "xAI"
+color = "#000000"
+status = "disabled"
+category = "apiKey"
+key_url = "https://console.x.ai"
+docs = "https://docs.x.ai/developers/rest-api-reference/management/billing"
+auth = "apiKey"
+key_hosts = ["management-api.x.ai"]
+poll_seconds = 300
+
+# Documented, team-id-free endpoint: validates a management key and returns its scope.
+[[request]]
+id = "key"
+method = "GET"
+url = "https://management-api.x.ai/auth/management-keys/validation"
+headers = { Authorization = "Bearer {{key}}", Accept = "application/json" }
+timeout_seconds = 10

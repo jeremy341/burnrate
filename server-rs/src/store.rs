@@ -1,7 +1,8 @@
 use crate::types::Record;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Parsed usage is kept as one Vec<f64> per transcript file: 14 numbers per record. The on-disk
 /// cache is the same bytes and the same layout as the TypeScript server's, so either can read it.
@@ -41,12 +42,36 @@ impl Interner {
         self.ids.insert(s.to_string(), id);
         id
     }
+    /// The id of an already interned string, without interning it.
+    pub fn lookup(&self, s: &str) -> Option<u32> {
+        self.ids.get(s).copied()
+    }
     pub fn get(&self, id: f64) -> &str {
         self.strings.get(id as usize).map(String::as_str).unwrap_or("")
+    }
+    /// Rebuild the table from the ids still referenced by cached rows. Ids not in `live`
+    /// (strings orphaned by deleted transcript files) are discarded. Returns an old-id ->
+    /// new-id remap so callers can rewrite persisted id columns before saving.
+    pub fn retain_ids(&mut self, live: &HashSet<u32>) -> HashMap<u32, u32> {
+        let mut remap = HashMap::new();
+        let mut kept = Vec::with_capacity(live.len());
+        for (old, s) in self.strings.drain(..).enumerate() {
+            if live.contains(&(old as u32)) {
+                remap.insert(old as u32, kept.len() as u32);
+                kept.push(s);
+            }
+        }
+        self.strings = kept;
+        self.ids = self.strings.iter().enumerate().map(|(i, s)| (s.clone(), i as u32)).collect();
+        remap
     }
 }
 
 /// 53-bit hash of a dedupe key (two FNV-1a style passes), identical to the TypeScript server's.
+///
+/// ACCEPTED RISK (review 02 #8): at ~5e7 distinct keys a birthday collision becomes likely and two
+/// different messages merge at the per-channel maximum (undercounting). The 53-bit width is fixed
+/// by the shared TS cache format; widening it needs a coordinated cache-version bump on both sides.
 pub fn hash_key(key: &str) -> f64 {
     let mut a: u32 = 0x811c9dc5;
     let mut b: u32 = 0x9747b28c;
@@ -109,7 +134,8 @@ pub struct FileEntry {
     pub size: f64,
     pub mtime_ms: f64,
     pub malformed: u32,
-    pub rows: Vec<f64>,
+    /// Shared with the published view so a summary never copies a file's rows.
+    pub rows: Arc<Vec<f64>>,
 }
 
 pub fn save(path: &Path, version: u32, strings: &Interner, files: &HashMap<String, FileEntry>) {
@@ -126,7 +152,7 @@ pub fn save(path: &Path, version: u32, strings: &Interner, files: &HashMap<Strin
     out.extend_from_slice(&header_bytes);
     out.extend(std::iter::repeat(0u8).take(padding));
     for (_, e) in &entries {
-        for v in &e.rows {
+        for v in e.rows.iter() {
             out.extend_from_slice(&v.to_le_bytes());
         }
     }
@@ -156,7 +182,7 @@ pub fn load(path: &Path, version: u32) -> Option<(Interner, HashMap<String, File
     for f in header["files"].as_array()? {
         let count = f["rowCount"].as_u64()? as usize * STRIDE;
         let bytes = buf.get(offset..offset + count * 8)?;
-        let rows: Vec<f64> = bytes.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect();
+        let rows: Arc<Vec<f64>> = Arc::new(bytes.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect());
         offset += count * 8;
         files.insert(
             f["key"].as_str()?.to_string(),

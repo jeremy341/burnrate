@@ -1,0 +1,35 @@
+# Azure OpenAI / Microsoft Foundry (Azure OpenAI models).
+# source: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/monitor-openai-reference
+# source: https://learn.microsoft.com/en-us/rest/api/cost-management/query/usage
+# NO USAGE API: there is no key-level balance or usage endpoint. Token metrics
+# are in Azure Monitor (ProcessedPromptTokens / ProcessedInferenceTokens) and
+# spend in Cost Management; both require Microsoft Entra ID OAuth plus a
+# subscription/resource id. The inference host is per-resource
+# (<resource>.openai.azure.com), which the fixed-URL definition schema cannot
+# express either. Per-request x-ratelimit-remaining-* headers only describe the
+# current call, not spend, and the definition engine maps JSON bodies only.
+# CATALOG NOTE: disabled - Entra-only cost/monitor APIs; use a local budget + proxy.
+schema = 1
+id = "azure-openai"
+label = "Azure OpenAI"
+color = "#0078D4"
+status = "disabled"
+category = "admin"
+docs = "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/monitor-openai-reference"
+# auth = "none" is a schema placeholder: the management APIs need Entra ID
+# OAuth, not the inference api-key, and the definition format cannot sign OAuth.
+auth = "none"
+poll_seconds = 300
+plan = "Azure OpenAI"
+
+# Schema-only placeholder so the definition parses (1..4 requests required).
+# Never executed while status = "disabled"; documents the Cost Management query
+# that would return Azure OpenAI spend (filter by resource/service in the body).
+# source: https://learn.microsoft.com/en-us/rest/api/cost-management/query/usage
+[[request]]
+id = "cost"
+method = "POST"
+url = "https://management.azure.com/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.CostManagement/query?api-version=2026-06-01"
+headers = { "Content-Type" = "application/json" }
+body = '''{"type":"Usage","timeframe":"MonthToDate","dataset":{"granularity":"None","aggregation":{"totalCost":{"name":"PreTaxCost","function":"Sum"}}}}'''
+timeout_seconds = 10

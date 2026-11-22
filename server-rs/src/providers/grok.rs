@@ -45,7 +45,21 @@ pub fn usage_to_windows(body: &Value) -> Vec<Window> {
         "monthly" => "Monthly",
         _ => "Subscription",
     };
-    vec![Window::new("subscription", kind, label, used).resets(end.and_then(iso_ms)).mins((mins > 0.0).then_some(mins))]
+    // The CLI billing endpoint is undocumented: `unofficial`.
+    vec![Window::new("subscription", kind, label, used).provenance("unofficial").resets(end.and_then(iso_ms)).mins((mins > 0.0).then_some(mins))]
+}
+
+/// `auth.json` holds at least one stored credential with a token (the file can exist but be empty
+/// after `grok logout`).
+pub fn login_present(path: &std::path::Path) -> bool {
+    read_json(path)
+        .and_then(|all| all.as_object().map(|o| o.values().any(|c| c.get("key").and_then(Value::as_str).is_some_and(|k| !k.trim().is_empty()))))
+        .unwrap_or(false)
+}
+
+/// Where the Grok CLI keeps its login (`GROK_HOME` or `~/.grok`).
+pub fn auth_file() -> PathBuf {
+    grok_home().join("auth.json")
 }
 
 pub struct Grok;
@@ -63,8 +77,11 @@ impl Provider for Grok {
     fn auth(&self) -> Auth {
         Auth::LocalLogin
     }
+    fn hint(&self) -> &'static str {
+        "Sign in with the Grok CLI"
+    }
     fn has_login(&self) -> bool {
-        grok_home().join("auth.json").exists()
+        login_present(&grok_home().join("auth.json"))
     }
     fn read(&self, _keys: &KeyStore) -> Vec<Value> {
         let Some(credential) = read_credential() else { return Vec::new() };
@@ -84,8 +101,24 @@ impl Provider for Grok {
                 let message = if text.contains("WKE=privacy-mode:") { "Grok usage unavailable (Switch your xAI account to Privacy Mode to show Grok usage limits)." } else { "Grok usage unavailable (HTTP 403)." };
                 vec![unavailable_account(head, message.into())]
             }
+            Err(ureq::Error::Status(401, _)) => vec![unavailable_account(head, login_expired_message("Grok"))],
             Err(ureq::Error::Status(code, _)) => vec![unavailable_account(head, format!("Grok usage unavailable (HTTP {code})."))],
             Err(_) => vec![unavailable_account(head, "Grok usage unavailable (error).".into())],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn grok_windows_are_labelled_unofficial() {
+        let body = json!({"config": {"creditUsagePercent": 15.0, "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2026-11-16T00:00:00Z", "end": "2026-11-23T00:00:00Z"}}});
+        let windows = usage_to_windows(&body);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].provenance, Some("unofficial"));
+        assert_eq!(windows[0].kind, "weekly");
     }
 }

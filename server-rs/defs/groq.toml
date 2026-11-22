@@ -1,0 +1,28 @@
+schema = 1
+id = "groq"
+label = "Groq"
+color = "#F55036"
+# NO USAGE API: Groq reports rate limits only as HTTP response headers
+# (x-ratelimit-limit-requests/-tokens and -remaining-* / -reset-*), which are not
+# a spend or quota signal. Usage/spend is console-session (Stytch cookie) only or
+# Enterprise Prometheus metrics; there is no key-scoped balance/limit endpoint.
+# A definition that only validates the key must not be exposed to users.
+# CATALOG NOTE: disabled - no key-based usage API; use a local budget + proxy.
+# source: https://console.groq.com/docs/rate-limits
+status = "disabled"
+category = "apiKey"
+key_url = "https://console.groq.com/keys"
+docs = "https://console.groq.com/docs/rate-limits"
+auth = "apiKey"
+key_hosts = ["api.groq.com"]
+poll_seconds = 300
+
+# Schema-only placeholder so the definition parses (1..4 requests required).
+# Never executed while status = "disabled"; produces no windows or balances.
+# source: https://console.groq.com/docs/openai
+[[request]]
+id = "models"
+method = "GET"
+url = "https://api.groq.com/openai/v1/models"
+headers = { Authorization = "Bearer {{key}}" }
+timeout_seconds = 10

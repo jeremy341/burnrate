@@ -1,0 +1,53 @@
+# GitHub Copilot - premium-request and chat quota snapshots.
+# source: https://raw.githubusercontent.com/steipete/CodexBar/main/docs/copilot.md
+# source: https://docs.github.com/en/rest/billing/usage
+# source: docs/research/03-universal-providers.md section 2.1 "GitHub Copilot" (evidence [C]/[S]/[U]).
+# UNVERIFIED: `copilot_internal/user` is an undocumented private endpoint. The JSON key casing
+# (snake_case here, camelCase in some trackers) and the exact field set have not been checked
+# against a live response. The credential is a user-supplied GitHub OAuth/PAT token; browser
+# cookies are deliberately never read. `credits_used` is a request count, not money, so it is
+# not expressible as a money-shaped [[balance]] under this schema.
+schema = 1
+id = "copilot"
+label = "GitHub Copilot"
+color = "#24292f"
+status = "experimental"
+category = "agent"
+docs = "https://docs.github.com/en/copilot/concepts/billing/copilot-requests"
+auth = "apiKey"
+key_hosts = ["api.github.com"]
+poll_seconds = 300
+plan = "GitHub Copilot"
+
+[[request]]
+id = "user"
+method = "GET"
+url = "https://api.github.com/copilot_internal/user"
+headers = { Authorization = "token {{key}}", Accept = "application/json", "Editor-Version" = "vscode/1.96.2", "Editor-Plugin-Version" = "copilot-chat/0.26.7", "User-Agent" = "GitHubCopilotChat/0.26.7", "X-Github-Api-Version" = "2025-04-01" }
+timeout_seconds = 10
+
+[[window]]
+id = "premium_interactions"
+kind = "monthly"
+label = "Premium requests"
+from = "user"
+used_percent = "$.quota_snapshots.premium_interactions.percent_remaining"
+transform = ["invert", "clamp:0:100"]
+resets_at = "$.quota_reset_date"
+resets_at_format = "iso8601"
+window_minutes = 43200
+skip_if_null = ["used_percent"]
+provenance = "unofficial"
+
+[[window]]
+id = "chat"
+kind = "monthly"
+label = "Chat requests"
+from = "user"
+used_percent = "$.quota_snapshots.chat.percent_remaining"
+transform = ["invert", "clamp:0:100"]
+resets_at = "$.quota_reset_date"
+resets_at_format = "iso8601"
+window_minutes = 43200
+skip_if_null = ["used_percent"]
+provenance = "unofficial"

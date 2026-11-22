@@ -1,0 +1,20 @@
+{
+  "copilotPlan": "copilot-individual",
+  "access_type_sku": "copilot_individual",
+  "quota_snapshots": {
+    "premium_interactions": {
+      "entitlement": 1000,
+      "remaining": 750,
+      "percent_remaining": 75.0,
+      "unlimited": false,
+      "credits_used": 0
+    },
+    "chat": {
+      "entitlement": 100,
+      "remaining": 100,
+      "percent_remaining": 100.0,
+      "unlimited": true
+    }
+  },
+  "quota_reset_date": "2026-12-01T00:00:00Z"
+}
