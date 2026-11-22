@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+# TEMPLATE: rendered by packaging/scripts/render-manifests.mjs at release time.
+PackageIdentifier: Burnrate.Burnrate
+PackageVersion: __VERSION__
+PackageLocale: en-US
+Publisher: Burnrate
+PublisherUrl: https://github.com/__REPO__
+PublisherSupportUrl: https://github.com/__REPO__/issues
+PackageName: Burnrate
+PackageUrl: https://github.com/__REPO__
+License: MIT
+LicenseUrl: https://github.com/__REPO__/blob/main/LICENSE
+ShortDescription: Local usage limits and burn-rate tracker for AI coding agents.
+Description: >
+  Burnrate shows how fast you burn through your AI quotas. It reads usage limits,
+  reset times, cost and tokens for Claude Code, Codex, OpenCode and API-key
+  providers in one local app. Keys are stored encrypted on your computer and
+  nothing is sent to a Burnrate server.
+Moniker: burnrate
+Tags:
+  - ai
+  - usage
+  - limits
+  - quota
+  - cli
+  - developer-tools
+ReleaseNotesUrl: https://github.com/__REPO__/releases/tag/v__VERSION__
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

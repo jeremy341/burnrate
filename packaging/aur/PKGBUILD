@@ -1,0 +1,46 @@
+# Maintainer: Burnrate <maintainers@burnrate.invalid>
+# DRAFT / UNVERIFIED: binary package built from the release tarball.
+# Nothing in this repo runs makepkg. Before publishing:
+#   1. render tokens with packaging/scripts/render-manifests.mjs
+#   2. bash -n PKGBUILD
+#   3. makepkg --printsrcinfo > .SRCINFO   (commit the generated .SRCINFO)
+#   4. test in a clean chroot (`makepkg --syncdeps`) on Arch
+pkgname=burnrate-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Local usage limits and burn-rate tracker for AI coding agents"
+arch=('x86_64')
+url="https://github.com/__REPO__"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'hicolor-icon-theme')
+provides=('burnrate')
+conflicts=('burnrate')
+options=('!strip' '!debug')
+source=("burnrate-${pkgver}.tar.gz::https://github.com/__REPO__/releases/download/v${pkgver}/Burnrate-${pkgver}-linux-x86_64.tar.gz")
+sha256sums=('__SHA256_LINUX_TARBALL__')
+
+package() {
+  local dir="${srcdir}/Burnrate-${pkgver}-linux-x86_64"
+  local libdir="${pkgdir}/usr/lib/burnrate"
+
+  # find_web_dir() only honours BURNRATE_WEB or <exe>/dist/web. Install the real
+  # binaries privately and put small wrappers in /usr/bin that pin the bundled web dir.
+  install -Dm755 "${dir}/burnrate" "${libdir}/burnrate"
+  install -Dm755 "${dir}/burnrate-server" "${libdir}/burnrate-server"
+  mkdir -p "${pkgdir}/usr/bin"
+  printf '#!/bin/sh\nexport BURNRATE_WEB=/usr/share/burnrate/web\nexec /usr/lib/burnrate/burnrate "$@"\n' > "${pkgdir}/usr/bin/burnrate"
+  printf '#!/bin/sh\nexport BURNRATE_WEB=/usr/share/burnrate/web\nexec /usr/lib/burnrate/burnrate-server "$@"\n' > "${pkgdir}/usr/bin/burnrate-server"
+  chmod 755 "${pkgdir}/usr/bin/burnrate" "${pkgdir}/usr/bin/burnrate-server"
+  install -Dm644 "${dir}/org.burnrate.Burnrate.desktop" \
+    "${pkgdir}/usr/share/applications/org.burnrate.Burnrate.desktop"
+  install -Dm644 "${dir}/org.burnrate.Burnrate.metainfo.xml" \
+    "${pkgdir}/usr/share/metainfo/org.burnrate.Burnrate.metainfo.xml"
+  install -Dm644 "${dir}/org.burnrate.Burnrate.svg" \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/org.burnrate.Burnrate.svg"
+  install -Dm644 "${dir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  mkdir -p "${pkgdir}/usr/share/burnrate"
+  cp -r "${dir}/web" "${pkgdir}/usr/share/burnrate/web"
+
+  # Register the burnrate:// handler declared by the desktop file's MimeType.
+  update-desktop-database -q "${pkgdir}/usr/share/applications" || true
+}

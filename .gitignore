@@ -5,3 +5,8 @@ dist/
 *.log
 data/
 server-rs/target/
+cli/target/
+src-tauri/target/
+src-tauri/gen/
+scripts/smoke/.out/
+scripts/smoke/.scratch/

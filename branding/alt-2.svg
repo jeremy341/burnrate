@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round">
+  <!-- Alternative: a flame inside a ring gauge, with a pace tick on the ring. -->
+  <circle cx="12" cy="12" r="9.3" stroke-width="1.3" />
+  <path d="M 12 2.7 A 9.3 9.3 0 1 1 4.48 17.47" stroke-width="2.7" />
+  <path d="M 18.93 16 L 22.05 17.8" stroke-width="1.5" />
+  <g transform="translate(6.8 6.8) scale(0.36)" fill="currentColor" stroke="none">
+    <path d="M 13.2 2
+             C 12.8 5.8 10.4 7.6 8.6 9.8
+             C 6.4 12.4 5.2 14.6 5.2 17
+             C 5.2 19.8 8.2 22.2 12 22.2
+             C 15.9 22.2 18.8 19.8 18.8 17
+             C 18.8 14.4 17.4 12.2 15.6 10.2
+             C 15.6 12.6 14.4 13.4 13.6 13.7
+             C 14.4 9.8 13.4 5.6 13.2 2 Z" />
+  </g>
+</svg>

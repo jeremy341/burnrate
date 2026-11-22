@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DRAFT: shipped by the Linux tarball and Flatpak manifest; not validated by CI. -->
+<component type="desktop-application">
+  <id>org.burnrate.Burnrate</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Burnrate</name>
+  <summary>Local usage limits and burn-rate tracker for AI coding agents</summary>
+  <description>
+    <p>
+      Burnrate shows how fast you burn through your AI quotas: usage limits, reset
+      times, cost and tokens for Claude Code, Codex, OpenCode and API-key providers
+      in one local app. Keys are stored encrypted on your computer; nothing is sent
+      to a Burnrate server.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.burnrate.Burnrate.desktop</launchable>
+  <url type="homepage">https://github.com/__REPO__</url>
+  <url type="bugtracker">https://github.com/__REPO__/issues</url>
+  <developer_name>Burnrate</developer_name>
+  <categories>
+    <category>Utility</category>
+    <category>Development</category>
+  </categories>
+  <releases>
+    <release version="__VERSION__" date="__DATE__"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

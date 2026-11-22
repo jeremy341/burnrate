@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "dmg", "appimage", "deb", "rpm"],
+    "publisher": "Burnrate",
+    "copyright": "MIT licensed. Contains code derived from T3 Code (MIT).",
+    "category": "DeveloperTool",
+    "resources": { "../dist/web": "web" },
+    "shortDescription": "See how fast you burn through your AI quotas.",
+    "longDescription": "Burnrate shows usage limits, resets, cost and tokens for all your AI coding agents in one local app. Everything stays on your computer.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "minimumWebview2Version": "109.0.0.0",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Burnrate",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["English", "German"],
+        "displayLanguageSelector": false,
+        "compression": "lzma",
+        "installerHooks": "../packaging/windows/installer-hooks.nsh"
+      }
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      },
+      "deb": {
+        "section": "utils",
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"],
+        "desktopTemplate": "../packaging/linux/deb-desktop-template.desktop",
+        "postInstallScript": "../packaging/linux/deb-postinst.sh"
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "gtk3", "libayatana-appindicator-gtk3"],
+        "desktopTemplate": "../packaging/linux/deb-desktop-template.desktop",
+        "postInstallScript": "../packaging/linux/deb-postinst.sh"
+      }
+    }
+  }
+}

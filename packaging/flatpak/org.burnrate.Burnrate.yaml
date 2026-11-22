@@ -1,0 +1,49 @@
+# DRAFT / UNVERIFIED: Flatpak is not built by CI yet.
+#
+# Open questions before this can be published:
+#   - Tauri 2 needs webkit2gtk-4.1 and GTK 3; check that the chosen runtime ships them
+#     (the GNOME runtime does at the time of writing, but this must be re-checked).
+#   - The build uses the prebuilt release tarball; a source build with the rust-stable
+#     SDK extension is the long-term plan (vendored cargo crates, no network in build).
+#   - Tray support depends on the desktop portal / StatusNotifierWatcher availability.
+#   - The desktop shell reads agent logs outside the sandbox; the --filesystem grants
+#     below are read-only and deliberately narrow.
+#
+# Validate with: flatpak-builder --dry-run --force-clean build-dir packaging/flatpak/org.burnrate.Burnrate.yaml
+# Render first with packaging/scripts/render-manifests.mjs (replaces __VERSION__ etc.).
+app-id: org.burnrate.Burnrate
+runtime: org.gnome.Platform
+runtime-version: "48"
+sdk: org.gnome.Sdk
+command: burnrate
+
+finish-args:
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --filesystem=~/.claude:ro
+  - --filesystem=~/.codex:ro
+  - --filesystem=~/.config/burnrate:create
+  - --filesystem=~/.local/share/burnrate:create
+  - --filesystem=~/.config/autostart:create
+
+modules:
+  - name: burnrate
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 burnrate /app/bin/burnrate
+      - install -Dm755 burnrate-server /app/bin/burnrate-server
+      - mkdir -p /app/dist/web
+      - cp -r web/. /app/dist/web/
+      - install -Dm644 org.burnrate.Burnrate.desktop /app/share/applications/org.burnrate.Burnrate.desktop
+      - install -Dm644 org.burnrate.Burnrate.metainfo.xml /app/share/metainfo/org.burnrate.Burnrate.metainfo.xml
+      - install -Dm644 org.burnrate.Burnrate.svg /app/share/icons/hicolor/scalable/apps/org.burnrate.Burnrate.svg
+      - install -Dm644 LICENSE /app/share/licenses/org.burnrate.Burnrate/LICENSE
+    sources:
+      - type: archive
+        url: https://github.com/__REPO__/releases/download/v__VERSION__/Burnrate-__VERSION__-linux-x86_64.tar.gz
+        sha256: __SHA256_LINUX_TARBALL__
+        strip-components: 1

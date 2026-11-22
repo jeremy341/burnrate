@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - feature/universal-app
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  web:
+    name: Web (typecheck + vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11 --activate
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: corepack pnpm typecheck
+      - name: Test
+        # The skeleton has no tests yet; packages add them. Failures still fail CI.
+        run: corepack pnpm test -- --passWithNoTests
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server-rs -> target
+      - name: Linux WebView dependencies
+        if: runner.os == 'Linux' && hashFiles('src-tauri/Cargo.toml') != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Test server
+        run: cargo test --locked --manifest-path server-rs/Cargo.toml
+      - name: Test CLI
+        if: hashFiles('cli/Cargo.toml') != ''
+        run: cargo test --locked --manifest-path cli/Cargo.toml
+      - name: Check desktop shell
+        if: hashFiles('src-tauri/Cargo.toml') != ''
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+  packaging:
+    name: Packaging files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate workflows and manifests
+        run: node packaging/scripts/validate-packaging.mjs
+      - name: Self-test the YAML parser
+        run: node packaging/scripts/validate-packaging.mjs --self-test
+      - name: Self-test checksums
+        run: node packaging/scripts/checksums.mjs --self-test
+      - name: Self-test manifest rendering
+        run: node packaging/scripts/render-manifests.mjs --self-test
+
+  build:
+    name: Build artifacts + size gate
+    needs:
+      - web
+      - rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server-rs -> target
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11 --activate
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile
+      - name: Build web
+        run: corepack pnpm build
+      - name: Build server (release)
+        run: cargo build --release --locked --manifest-path server-rs/Cargo.toml
+      - name: Size gate
+        if: hashFiles('scripts/perf-budget.mjs') != ''
+        run: node scripts/perf-budget.mjs
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist/web
+          if-no-files-found: error
+          retention-days: 7
