@@ -24,6 +24,7 @@ import {
 import { ScrollArea } from "~/components/ui/scroll-area";
 
 const ControlledOpenContext = createContext<boolean | undefined>(undefined);
+const ModalContext = createContext(true);
 
 function RetainedWhileClosed({ open, children }: { open: boolean; children: ReactNode }) {
   const controlledOpen = use(ControlledOpenContext);
@@ -46,7 +47,9 @@ function renderRetainedPopup(props: ComponentProps<"div">, state: { open: boolea
 function Dialog<Payload>(props: DialogPrimitive.Root.Props<Payload>) {
   return (
     <ControlledOpenContext value={props.open}>
-      <DialogPrimitive.Root {...props} />
+      <ModalContext value={props.modal === undefined || props.modal === true}>
+        <DialogPrimitive.Root {...props} />
+      </ModalContext>
     </ControlledOpenContext>
   );
 }
@@ -122,6 +125,7 @@ function DialogPopup({
   mediaControlsPlacement?: "inside" | "outside";
 }) {
   const gt = useGT();
+  const modal = use(ModalContext);
   const { popupRef, initialFocus } = useDialogActionInitialFocus();
   const popup = useRender({
     ref: popupRef,
@@ -135,6 +139,7 @@ function DialogPopup({
           className,
         )}
         data-slot="dialog-popup"
+        aria-modal={modal || undefined}
         initialFocus={initialFocus}
         render={renderRetainedPopup}
         {...props}
