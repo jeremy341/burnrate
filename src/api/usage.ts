@@ -74,11 +74,6 @@ export async function fetchUsage(
   return response;
 }
 
-/** The progress endpoint on its own; cheap enough to poll when no usage figures are needed. */
-export function fetchScanProgress(signal?: AbortSignal): Promise<ScanProgress> {
-  return request<ScanProgress>("/api/usage/progress", { signal });
-}
-
 export type ScanView =
   | { readonly kind: "idle" }
   /** The first listing of files is still running: the total is not known yet. */

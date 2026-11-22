@@ -358,7 +358,7 @@ fn rows_sit_in_the_requested_time_zone_day() {
         let rows = Arc::new(store::pack(&[rec], &mut inner.strings));
         inner.cache.insert(format!("test{SEP}x"), FileEntry { size: 1.0, mtime_ms: 1.0, malformed: 0, rows });
         inner.views[0].keys = vec![format!("test{SEP}x")];
-        scan::publish(&mut inner, 0, "test", false, true);
+        scan::publish(&mut inner, 0, "test", false);
         e.shared.generation.store(inner.generation, Ordering::Release);
     }
     e.shared.progress_lock().completed_once = true;

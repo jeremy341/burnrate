@@ -184,7 +184,6 @@ export function UsagePage({
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const gt = useGT();
-  const locale = useLocale();
   const m = useMessages();
   const shortcutOf = (option: (typeof METRIC_OPTIONS)[number] | (typeof WINDOW_OPTIONS)[number]) =>
     shortcutLabelForCommand(defaultKeybindings, option.command, { context: { usagePageOpen: true } });

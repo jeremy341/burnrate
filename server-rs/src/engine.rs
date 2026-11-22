@@ -451,7 +451,7 @@ impl Shared {
         if entries.is_empty() {
             return;
         }
-        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.0));
         entries.truncate(PERSISTED_SUMMARIES);
         let body = json!({"version": SUMMARY_FILE_VERSION, "savedAt": now_ms(), "entries": entries.into_iter().map(|(_, v)| v).collect::<Vec<_>>()});
         let path = self.data_dir.join(SUMMARY_FILE);
@@ -549,7 +549,7 @@ impl Engine {
         }
         let mut inner = Inner { strings, cache, dirty: false, rates, pricing: price_info, pricing_checked: checked, views, generation: 1 };
         for index in 0..providers.len() {
-            scan::publish(&mut inner, index, providers[index], readers[index].shared_sessions(), false);
+            scan::publish(&mut inner, index, providers[index], readers[index].shared_sessions());
         }
         let generation = inner.generation;
         let progress = Progress {
@@ -571,10 +571,6 @@ impl Engine {
         });
         shared.load_summaries();
         Engine { shared }
-    }
-
-    pub fn reader_dir(&self, provider: &str) -> Option<PathBuf> {
-        self.shared.readers.iter().find(|r| r.provider() == provider).map(|r| r.dir())
     }
 
     /// Begin the background transcript scan now (startup warm-up). Idempotent; never blocks.

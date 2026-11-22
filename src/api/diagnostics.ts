@@ -50,7 +50,7 @@ export function checkForUpdates(): Promise<UpdateCheckResult> {
 export function maskHomePath(text: string): string {
   return text.replace(
     /((?:[A-Za-z]:\\Users\\|\/Users\/|\/home\/))[^\\/\s]+/g,
-    (match, prefix: string) => `${prefix}[redacted]`,
+    (_match, prefix: string) => `${prefix}[redacted]`,
   );
 }
 

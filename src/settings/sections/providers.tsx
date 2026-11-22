@@ -42,7 +42,6 @@ import { ProviderIcon } from "~/providers/ProviderIcon";
 import type { SettingsPatch } from "~/settings/schema";
 import { useSettings, updateSettings } from "~/settings/store";
 import {
-  SettingsBlock,
   SettingsEmptyRow,
   SettingsNotice,
   SettingsNoticeStack,
@@ -198,8 +197,6 @@ function PollSecondsField({
     </div>
   );
 }
-
-type Translator = (message: string, values?: Record<string, string | number>) => string;
 
 /**
  * The one list the page draws: one row per provider the server can really connect, connected ones

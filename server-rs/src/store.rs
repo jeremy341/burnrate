@@ -150,7 +150,7 @@ pub fn save(path: &Path, version: u32, strings: &Interner, files: &HashMap<Strin
     let mut out = Vec::with_capacity(4 + header_bytes.len() + padding + entries.iter().map(|(_, e)| e.rows.len() * 8).sum::<usize>());
     out.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&header_bytes);
-    out.extend(std::iter::repeat(0u8).take(padding));
+    out.extend(std::iter::repeat_n(0u8, padding));
     for (_, e) in &entries {
         for v in e.rows.iter() {
             out.extend_from_slice(&v.to_le_bytes());

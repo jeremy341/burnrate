@@ -31,6 +31,7 @@ fn probes() -> &'static Mutex<HashMap<String, ProbeInfo>> {
 
 /// Records one provider probe so `/api/diagnostics` can show the last timing and error.
 /// Error strings are redacted at read time, after all secrets currently in the store are known.
+#[cfg(test)]
 pub fn record_probe(id: &str, duration_ms: u64, error: Option<&str>) {
     let mut map = probes().lock().unwrap_or_else(|e| e.into_inner());
     map.insert(id.to_string(), ProbeInfo { last_ms: Some(duration_ms), last_error: error.map(str::to_string) });

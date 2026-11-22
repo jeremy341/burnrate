@@ -16,7 +16,7 @@ use crate::State;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -293,7 +293,7 @@ impl Store {
             return self.rewrite();
         }
 
-        let Ok(mut file) = OpenOptions::new().read(true).write(true).create(true).open(&self.path) else {
+        let Ok(mut file) = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&self.path) else {
             return false;
         };
         if file.seek(SeekFrom::End(0)).is_err() {
@@ -553,7 +553,7 @@ pub fn read(state: &State, q: &Query) -> Vec<Series> {
 }
 
 /// Clears the whole history store.
-pub fn clear(state: &State) {
+pub fn clear() {
     let _guard = IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     Store::load(&history_file()).clear();
 }

@@ -253,7 +253,6 @@ pub fn search(query: &str) -> Result<Value, FetchError> {
 pub struct Downloaded {
     pub bytes: Vec<u8>,
     pub filename: String,
-    pub version: String,
 }
 
 /// Generic download flow used by both production and the loopback-stub tests.
@@ -283,7 +282,7 @@ where
     } else {
         format!("{extension_name}-{version}.vsix")
     };
-    Ok(Downloaded { bytes, filename, version })
+    Ok(Downloaded { bytes, filename })
 }
 
 /// Production download: both the detail request and the file request pass through
@@ -495,7 +494,6 @@ mod tests {
         let downloaded = download_from(&base, "demo.theme", true, fetch_local).unwrap();
         assert_eq!(downloaded.bytes, b"vsix bytes");
         assert_eq!(downloaded.filename, "theme-1.2.3.vsix");
-        assert_eq!(downloaded.version, "1.2.3");
         server.join().unwrap();
     }
 

@@ -39,9 +39,8 @@ fn data_roots_from(configured: &[PathBuf], candidates: &[PathBuf]) -> Vec<PathBu
     for dir in configured.iter().filter(|d| d.is_dir()) {
         push_unique(&mut out, dir.clone());
     }
-    match candidates.iter().find(|dir| has_data(dir)).or_else(|| candidates.iter().find(|dir| dir.exists())) {
-        Some(found) => push_unique(&mut out, found.clone()),
-        None => {}
+    if let Some(found) = candidates.iter().find(|dir| has_data(dir)).or_else(|| candidates.iter().find(|dir| dir.exists())) {
+        push_unique(&mut out, found.clone());
     }
     out
 }

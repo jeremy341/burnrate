@@ -91,7 +91,6 @@ export function setFollowSystem(nextFollowSystem: boolean): boolean {
 }
 
 export function setTheme(next: string): boolean {
-  const settings = getSettings();
   if (next === "system" || next === "light" || next === "dark") {
     void updateSettings({
       appearance: {

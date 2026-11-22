@@ -137,7 +137,7 @@ impl Source for Goose {
             .into_iter()
             .next()
             .and_then(|path| path.parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| db_path())
+            .unwrap_or_else(db_path)
     }
     fn files(&self) -> Vec<FileInfo> {
         db_paths()

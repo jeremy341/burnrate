@@ -287,9 +287,11 @@ fn parse_record(rec: &Value, s: &mut State) -> Vec<Record> {
         let sig = last.as_ref().map(signature);
         if let Some(c) = cumulative {
             rebase(s, c, ts);
-        } else if !has_cumulative && last.is_some() && sig != s.last_signature {
-            s.last_cumulative = advance(s.last_cumulative, last.as_ref().unwrap());
-            date_baseline(s, ts);
+        } else if !has_cumulative && sig != s.last_signature {
+            if let Some(last_value) = last.as_ref() {
+                s.last_cumulative = advance(s.last_cumulative, last_value);
+                date_baseline(s, ts);
+            }
         }
         s.last_signature = sig;
         return Vec::new();

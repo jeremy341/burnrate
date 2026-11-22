@@ -14,7 +14,7 @@ pub fn handle(state: &State, request: &mut Request, method: &Method, path: &str)
     }
     match method {
         Method::Get => {
-            let q = query(&request.url().to_string());
+            let q = query(request.url());
             let since_ms = q.get("since").and_then(|s| parse_iso(s)).unwrap_or(i64::MIN);
             let until_ms = q.get("until").and_then(|s| parse_iso(s)).unwrap_or_else(now_ms);
             let step_secs = q
@@ -39,7 +39,7 @@ pub fn handle(state: &State, request: &mut Request, method: &Method, path: &str)
             Some(json_response(200, &json!({"series": series})))
         }
         Method::Delete => {
-            history::clear(state);
+            history::clear();
             Some(json_response(200, &json!({"ok": true})))
         }
         _ => None,

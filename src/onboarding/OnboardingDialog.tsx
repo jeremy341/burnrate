@@ -4,7 +4,6 @@ import {
   CommandIcon,
   KeyRoundIcon,
   LayoutDashboardIcon,
-  MonitorIcon,
   Settings2Icon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";

@@ -17,7 +17,7 @@ const SAVE_EVERY_MS: f64 = 10_000.0;
 /// Rebuild one provider's published view from its surviving file keys. The rows are shared with the
 /// cache (an `Arc` clone per file); only providers whose sessions can sit in several files build a
 /// deduplicated copy. Distinct sessions are recounted each time (one pass over the session column).
-pub(super) fn publish(inner: &mut Inner, index: usize, provider: &str, shared_sessions: bool, finalize: bool) {
+pub(super) fn publish(inner: &mut Inner, index: usize, provider: &str, shared_sessions: bool) {
     let keys = std::mem::take(&mut inner.views[index].keys);
     let entries: Vec<&FileEntry> = keys.iter().filter_map(|k| inner.cache.get(k)).collect();
     let malformed: u32 = entries.iter().map(|e| e.malformed).sum();
@@ -108,8 +108,8 @@ impl Drop for ScanGuard<'_> {
 }
 
 impl Shared {
-    fn publish_index(&self, inner: &mut Inner, index: usize, finalize: bool) {
-        publish(inner, index, self.providers[index], self.readers[index].shared_sessions(), finalize);
+    fn publish_index(&self, inner: &mut Inner, index: usize) {
+        publish(inner, index, self.providers[index], self.readers[index].shared_sessions());
         self.generation.store(inner.generation, Ordering::Release);
     }
 
@@ -201,7 +201,7 @@ impl Shared {
             let mut inner = self.lock();
             if prune_interner(&mut inner) {
                 for index in 0..self.providers.len() {
-                    self.publish_index(&mut inner, index, false);
+                    self.publish_index(&mut inner, index);
                 }
             }
             self.save_cache(&mut inner);
@@ -270,7 +270,7 @@ impl Shared {
                 inner.views[plan.index].status = "partial";
                 inner.views[plan.index].message = Some("Some files could not be read.");
             }
-            self.publish_index(&mut inner, plan.index, false);
+            self.publish_index(&mut inner, plan.index);
             if inner.dirty && now_ms() - *last_save >= SAVE_EVERY_MS {
                 *last_save = now_ms();
                 self.save_cache(&mut inner);
@@ -309,7 +309,7 @@ impl Shared {
             view.status = "partial";
             view.message = Some("Some files could not be read.");
         }
-        self.publish_index(&mut inner, plan.index, true);
+        self.publish_index(&mut inner, plan.index);
         drop(inner);
         self.progress_lock().providers[plan.index].state = "done";
         after_batch();

@@ -145,7 +145,6 @@ mod tests {
     use super::*;
     use crate::providers::claude::choose_source;
     use serde_json::json;
-    use std::sync::Mutex;
 
     // The store and the settings snapshot are process globals: keep the tests that touch them in
     // one serialised group so parallel test threads cannot see each other's fixtures.

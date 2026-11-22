@@ -24,16 +24,6 @@ export type SettingsSection =
   | "advanced";
 export type SettingsResetScope = "all" | "section";
 
-export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
-  "general",
-  "appearance",
-  "usage",
-  "providers",
-  "notifications",
-  "shell",
-  "advanced",
-];
-
 /** GET /api/settings — full merged settings plus the legacy top-level mirrors. */
 export function fetchSettings(): Promise<AppSettings> {
   return request<AppSettings>("/api/settings");
@@ -46,11 +36,6 @@ export function sendSettingsPatch(patch: SettingsPatch): Promise<AppSettings> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ patch }),
   });
-}
-
-/** POST /api/settings/export */
-export function exportSettings(): Promise<SettingsExport> {
-  return request<SettingsExport>("/api/settings/export", { method: "POST" });
 }
 
 /** POST /api/settings/import */

@@ -186,6 +186,7 @@ impl KeyStore {
 
     /// Read a secret for internal use (e.g. a notification channel sender). Never expose this
     /// through an HTTP route; callers must redact it from any error or diagnostic output.
+    #[cfg(test)]
     pub fn get_secret(&self, scope: &str, name: &str) -> Option<String> {
         self.list(&Self::secret_scope(scope)).into_iter().find(|(n, _)| n == name).map(|(_, value)| value)
     }

@@ -148,7 +148,7 @@ pub fn parse_env_key(content: &str) -> Option<String> {
 
 /// A keyring secret is UTF-8 on macOS/Linux and UTF-16LE in a Windows credential blob.
 pub fn decode_secret(bytes: &[u8]) -> Option<String> {
-    let text = if bytes.len() >= 2 && bytes.len() % 2 == 0 && bytes[1] == 0 {
+    let text = if bytes.len() >= 2 && bytes.len().is_multiple_of(2) && bytes[1] == 0 {
         let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         String::from_utf16(&units).ok()?
     } else {
